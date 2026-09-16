@@ -254,7 +254,7 @@ static void led_write(const unsigned char f[LED_N][3])
     int fd = open(LEDDIR "/frame", O_WRONLY);
     if (fd < 0)
         return;
-    write(fd, hex, sizeof hex);
+    (void)write(fd, hex, sizeof hex);
     close(fd);
 }
 
@@ -546,9 +546,9 @@ static void anim_claim(void)
         usleep(20000);
     }
     int fd = open(LEDDIR "/boot_animation", O_WRONLY);
-    if (fd >= 0) { write(fd, "0", 1); close(fd); }
+    if (fd >= 0) { (void)write(fd, "0", 1); close(fd); }
     fd = open(LEDDIR "/led_current", O_WRONLY);
-    if (fd >= 0) { write(fd, "3", 1); close(fd); }
+    if (fd >= 0) { (void)write(fd, "3", 1); close(fd); }
 }
 
 /* The handover: take the lit ring away, and leave the head behind.
@@ -793,7 +793,7 @@ static void write_state(int n)
         return;
     char b[16];
     int k = snprintf(b, sizeof b, "%d\n", n);
-    write(fd, b, k);
+    (void)write(fd, b, k);
     fsync(fd);
     close(fd);
 }
@@ -1244,7 +1244,7 @@ static void netlog(const char *fmt, ...)
     int fd = netlog_open();
     if (fd < 0)
         return;
-    write(fd, line, n > (int)sizeof line - 1 ? (int)sizeof line - 1 : n);
+    (void)write(fd, line, n > (int)sizeof line - 1 ? (int)sizeof line - 1 : n);
     close(fd);
 }
 
@@ -1267,7 +1267,7 @@ static void netlog_line(const char *line)
     prefixed[p + llen] = 0;
     int fd = netlog_open();
     if (fd < 0) return;
-    write(fd, prefixed, p + llen);
+    (void)write(fd, prefixed, p + llen);
     close(fd);
 }
 
@@ -1869,7 +1869,7 @@ static void rdstate(const char *tag)
 {
     char st[64] = {0};
     int f = open(USBDIR "/state", O_RDONLY);
-    if (f >= 0) { read(f, st, sizeof st - 1); close(f); }
+    if (f >= 0) { (void)read(f, st, sizeof st - 1); close(f); }
     for (char *c = st; *c; c++) if (*c == '\n') *c = 0;
     note("%s state=%s\n", tag, st);
 }
@@ -2128,7 +2128,7 @@ int main(int argc, char **argv)
      * /vendor stays a plain symlink — nothing needs to write there.
      */
     mkdir("/etc", 0755);
-    symlink("/system/vendor", "/vendor");
+    (void)symlink("/system/vendor", "/vendor");
     DIR *ed = opendir("/system/etc");
     if (ed) {
         struct dirent *de;
@@ -2138,7 +2138,7 @@ int main(int argc, char **argv)
             char src[512], dst[512];
             snprintf(src, sizeof src, "/system/etc/%s", de->d_name);
             snprintf(dst, sizeof dst, "/etc/%s", de->d_name);
-            symlink(src, dst);
+            (void)symlink(src, dst);
         }
         closedir(ed);
     }
@@ -2725,7 +2725,7 @@ static void console_gate(void)
             sleep(tries > 8 ? 5 : 2);
 
         const char *p = "\r\nemOS console password: ";
-        write(1, p, strlen(p));
+        (void)write(1, p, strlen(p));
 
         char in[128];
         int n = 0;
@@ -2745,7 +2745,7 @@ static void console_gate(void)
             in[n++] = ch;
         }
         in[n] = 0;
-        write(1, "\r\n", 2);
+        (void)write(1, "\r\n", 2);
 
         pw_hash(salt, saltlen, in, iters, got);
         int ok = 1;
@@ -2757,7 +2757,7 @@ static void console_gate(void)
             break;
 
         const char *no = "wrong\r\n";
-        write(1, no, strlen(no));
+        (void)write(1, no, strlen(no));
     }
 
     if (have_t)
