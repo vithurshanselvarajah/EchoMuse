@@ -126,11 +126,11 @@
  * reached into shared memory; it never writes a frame while the child lives.
  */
 /* Overridable so the ring animation can be rendered and checked off-target;
- * see emos/init/ringsim.c. */
+ * see emos/init/ringsim.c. The default comes from the board header; ringsim
+ * overrides it with a tmpfs path so its writes never touch hardware. */
 #ifndef LEDDIR
-#define LEDDIR "/sys/devices/soc/11007000.i2c/i2c-0/0-003f"
+#define LEDDIR       BOARD_LED_NODE
 #endif
-#define LED_N  12
 
 /* Defined further down; declared here so the orbit probe and the stage marks
  * can record into the boot trail and the network log. */
@@ -172,10 +172,10 @@ static long mono_ms(void);
  * than position 1, and every arm of the closing sweep was rotated with it, so
  * the two sides met right of 12 o'clock instead of across it. Confirmed from
  * the device — the kernel starts its orbit on physical 0, which is seen as
- * position 2 (Wil, from video, 2026-09-05). */
-#define LED_BOTTOM 11
-#define LED_DIR    1        /* +1: the orbit runs on rising physical index */
-#define ORBIT_STEP_MS 109   /* measured; the wind-in matches this exactly */
+ * position 2 (Wil, from video, 2026-09-05).
+ *
+ * The geometry (LED_BOTTOM, LED_DIR, ORBIT_STEP_MS) is now in the board
+ * header; the orbit-rendering functions below still use the names. */
 /* Sampling the kernel's own frames before we stop it. OFF: it has done its
  * job — the palette and rate above are measured and written down — and it
  * costs ~400ms of every boot plus ten lines of the trail. Turn it back on if
@@ -736,7 +736,10 @@ static void note(const char *fmt, ...);
 static void netlog(const char *fmt, ...);
 static int  readint(const char *path);
 
-#define BOOTDEV   "/dev/block/mmcblk0p10"
+/* BOOTDEV is the board header's BOARD_BOOT_PART -- see the aliases
+ * near the top of this file. The remaining three are emOS-internal
+ * names whose values are stable across every board we know of, so
+ * they stay here rather than moving to a header. */
 #define GOODIMG   "/data/emos/boot-good.img"
 #define BOOTSTATE "/data/emos/boot.state"
 #define MAX_TRIES 3
@@ -1074,11 +1077,6 @@ static const char *cmdline_board(const char *cmdline)
     }
     return val;
 }
-
-/* The board table and resolver live in boards/<name>.h via board_resolve()
- * — see that header for the entries. Default last, so a stamp we do not
- * recognise still finds something to boot on. */
-static const struct board *board(void);
 
 /* Copy a serial out of `raw` into `out`, trimmed and validated.
  *
@@ -2043,16 +2041,9 @@ int main(int argc, char **argv)
      * able to damage the Android install we still rely on for recovery. */
     mkdir("/system", 0755);
     /* Which partition, from the stamp the packer put on our own cmdline --
-     * see cmdline_system_part(). Read here rather than at the top of main so
-     * the number appears in the stage line beside the mount it explains. */
-    char cmdl[2048] = "";
-    int cfd = open("/proc/cmdline", O_RDONLY);
-    if (cfd >= 0) {
-        ssize_t cn = read(cfd, cmdl, sizeof cmdl - 1);
-        close(cfd);
-        if (cn > 0)
-            cmdl[cn] = 0;
-    }
+     * see cmdline_system_part(). The cmdline was already read once above
+     * for cmdline_board(); we reuse the same buffer so a second open of
+     * /proc/cmdline does not race against a kernel mid-write. */
     int sysp = cmdline_system_part(cmdl);
     char sysdev[48];
     snprintf(sysdev, sizeof sysdev, "/dev/block/mmcblk0p%d", sysp);
