@@ -75,12 +75,27 @@ esac
 echo "reference kernel is $ARCH: building a matching init"
 CC=${CC:-$NDK/$TRIPLE-clang}
 
+# The board runtime is a separate translation unit so a second board
+# adds boards_<name>.c without touching init.c. Today there is one --
+# boards_biscuit.c, MediaTek's combo-chip bring-up -- and it links
+# alongside init.c to produce a single static binary. Adding a board
+# is "write boards/<name>.h, write boards_<name>.c, change BOARD_SRC";
+# init.c picks its constants up via the header so the same compile
+# rules apply to both translation units.
+BOARD_SRC="$HERE/init/boards/boards_biscuit.c"
+if [ ! -f "$BOARD_SRC" ]; then
+    echo "board runtime not found at $BOARD_SRC" >&2
+    exit 1
+fi
+
 if [ -x "$CC" ]; then
-    "$CC" -static -O2 -Wall -o "$WORK/init" "$HERE/init/init.c"
+    "$CC" -static -O2 -Wall -o "$WORK/init" \
+        "$HERE/init/init.c" "$BOARD_SRC"
 else
     echo "building init in the echomuse-compiler image ($CC not found)"
     docker run --rm -v "$HERE":/emos -v "$WORK":/out -w /emos echomuse-compiler \
-        bash -lc "$NDK/$TRIPLE-clang -static -O2 -Wall -o /out/init init/init.c"
+        bash -lc "$NDK/$TRIPLE-clang -static -O2 -Wall -o /out/init \
+            init/init.c init/boards/boards_biscuit.c"
 fi
 
 # The ramdisk is init plus the empty mountpoints it needs. Everything else the
