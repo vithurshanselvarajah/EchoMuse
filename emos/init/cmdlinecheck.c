@@ -165,8 +165,12 @@ int main(void)
     /* Reject anything that is not printable ASCII. A board id is a string the
      * packer stamps and init selects on, and a non-printable value here is
      * corruption rather than intent. */
-    check_str("non-printable", "ro emos.board=biscuit\x01", BD);
-    check_str("whitespace in the value", "ro emos.board=bis cuit", BD);
+    check_str("non-printable at the end", "ro emos.board=biscuit\x01", BD);
+    /* A bare space in the value would END the token, so this is not a
+     * useful test of non-printable rejection (the parser would simply
+     * see a shorter value). A \x01 mid-token survives tokenisation, so
+     * the parser's printable-ASCII check actually fires. */
+    check_str("non-printable mid-value", "ro emos.board=bis\x01cuit", BD);
     check_str("the key with an empty value", "ro emos.board=", BD);
     check_str("the key with no '='", "ro emos.board", BD);
     /* A bare substring search would return 'biscuit' here too — the test
