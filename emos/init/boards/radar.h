@@ -61,40 +61,45 @@
 
 /* ── LED ring ────────────────────────────────────────────────────────────── */
 
-/* Radar's LED ring is driven by four TI LP55231 chips at i2c-0
- * 0x32-0x35 (DT has all four at the same bus; they each drive a
- * quadrant). The kernel driver is not bound by default on this build
- * -- /sys/class/leds is empty -- and bringing it up is a separate
- * piece of work, so the LED path here is left pointing at a node that
- * does not yet exist and the LED_N count is zero. The animator's "ring
- * not present" path is the no-op branch in init.c's anim_claim().
+/* Radar's LED ring is, like biscuit's, an is31fl3236 driver at i2c-0
+ * 0x3F on the same MT8163 audiosys/i2c bus, with the same `frame`
+ * sysfs attribute the firmware writes 72 hex chars to (12 LEDs × 3
+ * bytes RGB) -- verified on a running FireOS 6 device, 2026-09-17.
+ * The four LP55231 chips at i2c-0 0x32-0x35 are NOT the LED ring; they
+ * are for backlight / proximity / IR (driver not bound on stock build
+ * and likely unusable without a kernel rebuild, see JOURNAL 2026-09-17).
+ * The is31fl3236 IS bound, and the firmware's led/i2c_controller.go
+ * already hardcodes the same path on the device side, so init's
+ * anim_claim() can take the ring over by writing "0" to boot_animation
+ * and then frames straight to `frame`.
  *
- * When the LP55231 binding lands, BOARD_LED_NODE moves to the sysfs
- * prefix of the bound lp5523x driver, BOARD_LED_COUNT goes to the
- * total LED count across the four chips (biscuit was 12; radar will
- * need to be measured, not assumed), and BOARD_LED_BOTTOM / DIR are
- * filled in from the kernel's own orbit, the same way biscuit's were.
- */
+ * Layout numbers -- LED_BOTTOM, LED_DIR, ORBIT_STEP_MS -- are picked
+ * to match biscuit's known-good defaults. The kernel's own orbit was
+ * not observable (Amazon's ledcontroller was killed mid-investigation
+ * and did not resume animating), so these values are placeholders the
+ * same way the analysis dump says: they need to be measured off a
+ * running radar kernel before they ship. */
 #ifndef BOARD_LED_NODE
-#define BOARD_LED_NODE    "/sys/devices/soc/11007000.i2c/i2c-0/0-0032"
+#define BOARD_LED_NODE    "/sys/devices/soc/11007000.i2c/i2c-0/0-003f"
 #endif
 
 #ifndef BOARD_LED_COUNT
-#define BOARD_LED_COUNT   0
+#define BOARD_LED_COUNT   12
 #endif
 
 #ifndef BOARD_LED_BOTTOM
-#define BOARD_LED_BOTTOM  0
+/* Placeholder -- match biscuit's value so the first orbit is at least
+ * in the same neighbourhood. To be measured. */
+#define BOARD_LED_BOTTOM  11
 #endif
 
 #ifndef BOARD_LED_DIR
+/* Placeholder -- +1 matches biscuit. To be measured. */
 #define BOARD_LED_DIR     1
 #endif
 
 #ifndef BOARD_ORBIT_STEP_MS
-/* No orbit to be measured on a board with no LED path yet. Pick the
- * biscuit value so an LED that gets bound on this image without the
- * header being updated has a sane default. */
+/* Placeholder -- biscuit's measured value. To be measured on radar. */
 #define BOARD_ORBIT_STEP_MS  109
 #endif
 
