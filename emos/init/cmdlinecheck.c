@@ -138,6 +138,8 @@ int main(void)
     /* Stamped: the board id travels verbatim from the packer to init. */
     check_str("stamped, biscuit",
               "bootopt=64S3 ro init=/init emos.board=biscuit", "biscuit");
+    check_str("stamped, radar",
+              "bootopt=64S3 ro init=/init emos.board=radar", "radar");
     check_str("stamped first",
               "emos.board=donut bootopt=64S3 ro", "donut");
     check_str("stamped in the middle",
@@ -147,6 +149,12 @@ int main(void)
     check_str("stamped alongside emos.system=",
               "ro emos.system=/dev/block/mmcblk0p14 emos.board=biscuit",
               "biscuit");
+    /* The packer's full stamp: both keys appear in the order it writes
+     * them, on a real device's cmdline. */
+    check_str("full packer stamp",
+              "bootopt=64S3 ramoops.dump_oops=1 "
+              "emos.system=/dev/block/mmcblk0p13 emos.board=radar",
+              "radar");
 
     /* Token boundary: a longer key merely ENDING in ours cannot answer. */
     check_str("a longer key ending in ours",
