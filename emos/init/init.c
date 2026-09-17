@@ -2036,6 +2036,15 @@ int main(int argc, char **argv)
 
     umask(022);   /* nodes exist; every child inherits a sane mask from here */
 
+    /* Stop the kernel's LED animation before any userspace writer can
+     * race it. The ring animator's child has not been forked yet, so
+     * there is no other writer; the kernel's sysfs grip is the only
+     * thing animating and the only thing that needs to release. See
+     * boards/boards.h for the why and boards_boards_<name>.c for the
+     * how (each board picks the sysfs attribute that actually gates on
+     * its own kernel build). */
+    board_anim_stop();
+
     snprintf(buf, sizeof buf, "EM64-INIT-OK acm-console\n");
     write_at(0, buf, strlen(buf));
 

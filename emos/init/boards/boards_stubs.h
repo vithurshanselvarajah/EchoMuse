@@ -39,4 +39,9 @@ __attribute__((weak)) int board_wifi_up(const char *patch_dir)
 
 __attribute__((weak)) void board_set_log(board_log_fn fn) { (void)fn; }
 
+/* No-op stub for the off-target tools. See the matching comment in
+ * boards.h for why init.c calls this in main() and what it is meant
+ * to stop. */
+__attribute__((weak)) void board_anim_stop(void) { }
+
 #endif /* EMOS_BOARDS_BOARDS_STUBS_H */

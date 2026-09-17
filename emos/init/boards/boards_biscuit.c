@@ -52,6 +52,7 @@
 extern void board_set_log(board_log_fn fn);
 extern const struct board_node *board_nodes(size_t *count);
 extern int board_wifi_up(const char *patch_dir);
+extern void board_anim_stop(void);
 
 /* The board_log_fn sink set by init.c. NULL until set, and the log
  * calls below all check -- a board built with a misconfigured link
@@ -80,6 +81,46 @@ const struct board_node *board_nodes(size_t *count)
 {
     *count = sizeof biscuit_nodes / sizeof biscuit_nodes[0];
     return biscuit_nodes;
+}
+
+/* Tell the is31fl3236 driver to drop its ring animation now, so it
+ * stops repainting frames between the moment init runs and the moment
+ * the animator child claims the ring.
+ *
+ * The kernel's animation is set up at probe time and runs until userspace
+ * writes "0" to the boot_animation sysfs attribute, exactly the way
+ * Stock Amazon's init.recovery.leds.rc does it on the first boot of a
+ * stock device. We do the same one line, but here, in C, because the
+ * initrc parser is an init-stage we have skipped.
+ *
+ * Returns silently on failure. The write returns ENOENT on a build where
+ * the device tree node was not built (a kconfig or DT omission), and
+ * ignoring that is right -- there is no animation to stop on such a
+ * device, so init's animator child stays the sole writer and never has
+ * to win a fight against anything.
+ *
+ * Idempotent: a second call writes 0 to the same attribute and costs
+ * nothing. init.c calls this exactly once, from main() before the
+ * animator child is forked.
+ *
+ * It also writes "0" to led_current here: stock ships 3, which is the
+ * value the firmware's idle pattern was tuned for, but init's animator
+ * targets 1 (per-frame current) to stay well below the chip's maximum.
+ * Lowering it at boot means the handover does not flash bright. */
+void board_anim_stop(void)
+{
+    int fd = open(BOARD_LED_NODE "/boot_animation", O_WRONLY);
+    if (fd >= 0) {
+        if (write(fd, "0", 1) != 1)
+            blog("anim: boot_animation write errno=%d\n", errno);
+        close(fd);
+    }
+    fd = open(BOARD_LED_NODE "/led_current", O_WRONLY);
+    if (fd >= 0) {
+        if (write(fd, "1", 1) != 1)
+            blog("anim: led_current write errno=%d\n", errno);
+        close(fd);
+    }
 }
 
 /* ── WMT ioctl interface ──────────────────────────────────────────────────── */

@@ -44,4 +44,18 @@ void board_set_log(board_log_fn fn);
 const struct board_node *board_nodes(size_t *count);
 int board_wifi_up(const char *patch_dir);
 
+/* Tell the kernel's LED driver to release its hold on the ring.
+ *
+ * The is31fl3236 driver used by both biscuit and radar runs an animation
+ * out of its probe until userspace clears the `boot_animation` sysfs
+ * attribute. Stock Android's init writes that zero on the first boot
+ * (init.recovery.leds.rc -- one line, nothing else). We have to do the
+ * same -- BEFORE the kernel's animation has a chance to start pulling
+ * userspace traffic into a steady cadence.
+ *
+ * Called from init's main(), so a missing implementation is build-broken
+ * not crash-broken. The stub in boards_stubs.h is silent, so the off-
+ * target tools link without either boards file declaring it. */
+void board_anim_stop(void);
+
 #endif /* EMOS_BOARDS_BOARDS_H */

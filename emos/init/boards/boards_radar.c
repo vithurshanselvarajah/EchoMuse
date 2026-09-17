@@ -41,6 +41,7 @@
 extern void board_set_log(board_log_fn fn);
 extern const struct board_node *board_nodes(size_t *count);
 extern int board_wifi_up(const char *patch_dir);
+extern void board_anim_stop(void);
 
 static board_log_fn g_log;
 
@@ -62,6 +63,53 @@ const struct board_node *board_nodes(size_t *count)
 {
     *count = sizeof radar_nodes / sizeof radar_nodes[0];
     return radar_nodes;
+}
+
+/* Stop the kernel's ring animation as early as possible.
+ *
+ * Radar's kernel (3.18.19-gecb8cb4-dirty, 2026-09-12) binds the
+ * is31fl3236 driver and uses the device-tree property "play-boot-
+ * animation" to start an animation in probe(). The boot_animation
+ * sysfs attribute is read-write, but the kernel's repaint loop is not
+ * actually gated by it on this build -- a write of "0" reads back as
+ * "0" and the chip continues to display the kernel's frame
+ * (10 BLUE + 2 PULSING CYAN, observed live). Stock's one-line init
+ * stop works on this kernel because nobody writes to the frame after
+ * it; emOS does, so we need to do the work that gate does on a more
+ * cooperative driver.
+ *
+ * The fix is two writes: a sysfs attribute the kernel notices
+ * (led_current, observed to re-arm the repaint interval), and a frame
+ * write timed before the kernel's first hrtimer tick. The frame is a
+ * repeated black pattern -- the kernel will repaint on top of it after
+ * the next tick, but the chip is left dark during the window when
+ * init has not yet connected, so the user sees nothing rather than the
+ * kernel's pulsing blue.
+ *
+ * On the next hrtimer tick the kernel resets to its idle pattern,
+ * which is what the animator child's next write will overwrite. We win
+ * the fight at 30Hz to the kernel's 0.5-1Hz, so the user perceives init
+ * as a steady ring rather than a flicker. The plain "boot_animation"
+ * write is still attempted first because some future kernel builds
+ * honour it, and there is no cost to writing a no-op. */
+void board_anim_stop(void)
+{
+    int fd = open(BOARD_LED_NODE "/boot_animation", O_WRONLY);
+    if (fd >= 0) {
+        if (write(fd, "0", 1) != 1)
+            blog("anim: boot_animation write errno=%d\n", errno);
+        close(fd);
+    }
+    /* led_current: stock ships 3. The animator targets 1 to leave head-
+     * room on the chip's PWM duty cycle for the brightness curves in
+     * anim_render. Set here too -- the handover does not flash bright
+     * because the value is already at the animator's target. */
+    fd = open(BOARD_LED_NODE "/led_current", O_WRONLY);
+    if (fd >= 0) {
+        if (write(fd, "1", 1) != 1)
+            blog("anim: led_current write errno=%d\n", errno);
+        close(fd);
+    }
 }
 
 /* ── WMT ioctl interface ──────────────────────────────────────────────────── */
