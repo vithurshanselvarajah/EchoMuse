@@ -44,20 +44,32 @@
 #include <time.h>
 #include <unistd.h>
 
-/* The board profile. Today there is one -- biscuit -- so this is a
- * compile-time include. Adding a second board is a build-system flag
- * (`-DEMOS_BOARD_DONUT`) plus a new boards/<name>.h and boards_<name>.c,
- * and the constants below resolve to whichever one was selected.
+/* The board profile. EMOS_BOARD is set by the build script (build.sh
+ * forwards it as -DEMOS_BOARD=<name>) and the matching header is
+ * included below. A board missing from the case list is a build error;
+ * the default to "biscuit" preserves today's single-board behaviour
+ * for anyone building without an explicit selection.
  *
  * For off-target tests (cmdlinecheck, ringsim, ...) this still picks
- * up biscuit, because they #include init.c whole and run on a
- * workstation -- there is no hardware to dispatch on.
+ * up biscuit, because the Makefile equivalent is "-DEMOS_BOARD=biscuit"
+ * passed as a default.
  *
  * boards_stubs.h provides weak placeholders for the board runtime so
- * the off-target tests link without boards_biscuit.c. */
+ * the off-target tests link without boards_<name>.c. */
 #include "boards/boards.h"
 #include "boards/boards_stubs.h"
-#include "boards/biscuit.h"
+
+#ifndef EMOS_BOARD
+#define EMOS_BOARD biscuit
+#endif
+
+/* Stringification is the only portable way to build an include path
+ * from a macro value; token-pasting would give "boards/biscuit" as a
+ * single identifier and choke on the slash. */
+#define EMOS_BOARD_STR2(x) #x
+#define EMOS_BOARD_STR(x)  EMOS_BOARD_STR2(x)
+
+#include EMOS_BOARD_STR(boards/EMOS_BOARD.h)
 
 /* Backwards-compatible aliases. The LED ring constants used to be
  * defined here directly; they now come from the board header. Renaming
