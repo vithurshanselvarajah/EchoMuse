@@ -1826,11 +1826,23 @@ static void net_main(void)
          *
          * This is the normal state during provisioning -- the wizard writes
          * WiFi over the USB console AFTER emOS is already running -- so the
-         * boot waits at stage 11 until a conf appears and then carries on. A
-         * supplicant started without one just exits and respawns for ever. */
+         * boot waits at stage 11 until a conf appears and then carries on.
+         *
+         * A bug measured on radar 2026-09-19: a freshly-wiped device has
+         * neither /data/emos/wpa.conf nor /system/etc/wifi/wpa_supplicant.conf
+         * so wpa_conf() returns NULL on the first iteration. The previous code
+         * SIGTERMed `wpa` here -- but on the first iteration `wpa` is still
+         * -1 (the spawn guard is below the !conf branch), so SIGTERM is
+         * conditional and never fires; meanwhile the `continue` skipped the
+         * spawn, leaving stage 11 with no supplicant running and no control
+         * socket. wpa_cli on the console then failed
+         * "No such file or directory" against the missing socket.
+         *
+         * Fix: skip the spawn while conf is missing, but the next loop turn
+         * re-checks -- the wizard writes the conf within seconds and the
+         * spawn branch picks it up. */
         const char *conf = wpa_conf();
         if (!conf) {
-            if (wpa > 0) { kill(wpa, SIGTERM); wpa = -1; }
             if (!said_noconf) {
                 said_noconf = 1;
                 netlog("no wifi conf yet (%s or %s) - waiting\n",
