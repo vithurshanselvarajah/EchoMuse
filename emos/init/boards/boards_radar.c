@@ -41,6 +41,7 @@
 extern void board_set_log(board_log_fn fn);
 extern const struct board_node *board_nodes(size_t *count);
 extern int board_wifi_up(const char *patch_dir);
+extern int board_wifi_prepare(void);
 extern void board_anim_stop(void);
 
 static board_log_fn g_log;
@@ -115,8 +116,12 @@ void board_anim_stop(void)
 /* ── WMT ioctl interface ──────────────────────────────────────────────────── */
 
 #define WMT_IOC_MAGIC             0xa0
+#define RADAR_IOCTL_SET_CHIP_ID   _IOW('w', 1, int)
 #define WMT_IOCTL_SET_PATCH_NAME  _IOW(WMT_IOC_MAGIC, 4, char *)
 #define WMT_IOCTL_SET_STP_MODE    _IOW(WMT_IOC_MAGIC, 5, int)
+#define WMT_IOCTL_RADAR_SETUP_18  _IOW(WMT_IOC_MAGIC, 24, int)
+#define WMT_IOCTL_RADAR_SETUP_0D  _IOW(WMT_IOC_MAGIC, 13, int)
+#define WMT_IOCTL_RADAR_SETUP_07  _IOW(WMT_IOC_MAGIC, 7, int)
 #define WMT_IOCTL_SET_PATCH_NUM   _IOW(WMT_IOC_MAGIC, 14, int)
 #define WMT_IOCTL_SET_PATCH_INFO  _IOW(WMT_IOC_MAGIC, 15, char *)
 
@@ -206,62 +211,171 @@ static int wmt_answer_patches(int fd, const char *dir)
  * unset path. */
 static const char *g_patch_dir;
 
+/* Stand in for the stock launcher's patch-answer loop, for as long as
+ * the chip is up.
+ *
+ * Verified on radar 2026-09-18: the kernel posts "srh_patch" HERE, on
+ * stpwmt (a background read caught the string on this node and nothing
+ * on wmtdetect), each time mtk_wmtd's power-on cycle reaches the patch
+ * stage. The answer goes back over the SAME fd: SET_PATCH_NUM, one
+ * SET_PATCH_INFO per patch, then an "ok" write to release the waiting
+ * kernel thread.
+ *
+ * The loop must survive short reads. stpwmt's read returns <= 0 while
+ * the chip is between power cycles (mtk_wmtd backs its retry off to
+ * ~48s after fast failures), and the first version of this daemon
+ * exited on the first such read -- silently, with no log line, because
+ * the exit path had no blog(). The kernel then logged "wait signal
+ * timeout" -> "patch info perpare fail" on every cycle with nobody
+ * listening. Biscuit's daemon survives this by design (poll, then
+ * `continue` on n <= 0); this one now does the same. */
 static int wmt_daemon(int fd)
 {
     char buf[128];
     ssize_t r;
-    const char *ok = "ok";
     int answered = 0;
 
-    /* Block forever reading the wmt detect fd. The kernel posts messages
-     * here as it negotiates the connsys bring-up; init answers each one.
-     * "srh_patch" is the only one that needs an answer here -- the rest
-     * are status messages the kernel logs on its own. */
     for (;;) {
+        struct pollfd pfd = { .fd = fd, .events = POLLIN };
+        int pr = poll(&pfd, 1, -1);
+        if (pr < 0) {
+            if (errno == EINTR)
+                continue;
+            blog("wmt: poll failed errno=%d\n", errno);
+            return -1;
+        }
         r = read(fd, buf, sizeof buf - 1);
-        if (r <= 0)
-            return r;
+        if (r <= 0) {
+            /* Chip cycled or no data yet -- keep listening. */
+            usleep(50000);
+            continue;
+        }
         buf[r] = 0;
         if (!strcmp(buf, "srh_patch")) {
             blog("wmt: patch request received (attempt %d)\n", ++answered);
-            /* Tell the kernel the firmware lives in /vendor/firmware/
-             * (the path passed in by init). It will then wait for the
-             * SET_PATCH_INFO blob below. */
+            /* Re-assert the patch directory each time: the kernel's
+             * patch search may not carry state across power cycles. */
             if (ioctl(fd, WMT_IOCTL_SET_PATCH_NAME, (void *)g_patch_dir) < 0)
                 blog("wmt: SET_PATCH_NAME failed errno=%d\n", errno);
-            if (wmt_answer_patches(fd, g_patch_dir) <= 0) {
+            int got = wmt_answer_patches(fd, g_patch_dir);
+            if (got <= 0) {
                 blog("wmt: no patches answered\n");
+                /* Answer "fail" rather than silence: the kernel thread
+                 * is blocked on a completion either way, and letting it
+                 * time out just stretches each retry cycle out. */
+                if (write(fd, "fail", 4) < 0)
+                    blog("wmt: fail write errno=%d\n", errno);
                 continue;
             }
-            if (write(fd, ok, strlen(ok)) < 0)
+            if (write(fd, "ok", 2) < 0)
                 blog("wmt: ack write failed errno=%d\n", errno);
+        } else {
+            blog("wmt: unhandled daemon cmd '%s'\n", buf);
         }
-        /* Everything else is informational; the kernel logs it. */
     }
+}
+
+static int radar_loader_fallback(void)
+{
+    static const char *const loaders[] = {
+        "/system/vendor/bin/wmt_loader",
+        "/system/bin/wmt_loader",
+        NULL,
+    };
+
+    for (int i = 0; loaders[i]; i++) {
+        if (access(loaders[i], X_OK) != 0)
+            continue;
+        pid_t p = fork();
+        if (p == 0) {
+            execl(loaders[i], loaders[i], (char *)NULL);
+            _exit(127);
+        }
+        if (p > 0) {
+            blog("wmt: radar fallback launched %s\n", loaders[i]);
+            return 0;
+        }
+        blog("wmt: fork(%s) failed errno=%d\n", loaders[i], errno);
+    }
+
+    blog("wmt: no radar wmt_loader available; wifi cannot come up\n");
+    return -1;
+}
+
+int board_wifi_prepare(void)
+{
+    int detect = open("/dev/wmtdetect", O_RDWR);
+    if (detect < 0) {
+        blog("wmt: open /dev/wmtdetect failed errno=%d\n", errno);
+        return -1;
+    }
+    int chip_id = 0x8163;
+    int r = ioctl(detect, RADAR_IOCTL_SET_CHIP_ID, chip_id);
+    blog("wmt: radar chip id 0x%x rc=%d errno=%d\n",
+         chip_id, r, r ? errno : 0);
+    close(detect);
+    if (r < 0)
+        return -1;
+
+    return 0;
 }
 
 int board_wifi_up(const char *patch_dir)
 {
-    int fd = open("/dev/wmtdetect", O_RDWR);
-    if (fd < 0) {
-        blog("wmt: open /dev/wmtdetect failed errno=%d\n", errno);
-        return -1;
-    }
+    if (!patch_dir || !*patch_dir)
+        patch_dir = "/system/vendor/firmware/";
 
-    /* Tell the kernel which bus the connsys is on. This value is the
-     * same for every MT8163 board Amazon shipped -- FM over BTIF --
-     * because the SoC pins don't change between boards; what changes
-     * is which external chip they connect to, and the WMT driver only
-     * cares about the bus it talks to the chip on. */
-    if (ioctl(fd, WMT_IOCTL_SET_STP_MODE, WMT_HIF_ARG) < 0) {
-        blog("wmt: SET_STP_MODE(0x%x) failed errno=%d\n",
-             WMT_HIF_ARG, errno);
-        close(fd);
+    /* stpwmt carries the whole bring-up on this kernel: the HIF conf, the
+     * setup ioctls AND the "srh_patch" request posted during power-on.
+     * Verified on radar 2026-09-18 by a background read on both nodes:
+     * "srh_patch" arrives here, never on wmtdetect.
+     *
+     * wmtdetect has one job -- the chip-id ioctl in board_wifi_prepare()
+     * -- and nothing else; opening it for the daemon gets no data and
+     * the patch search times out with nobody listening. */
+    int fd = open("/dev/stpwmt", O_RDWR);
+    if (fd < 0) {
+        blog("wmt: open /dev/stpwmt failed errno=%d\n", errno);
         return -1;
     }
 
     g_patch_dir = patch_dir;
-    wmt_daemon(fd);
+    pid_t p = fork();
+    if (p == 0) {
+        wmt_daemon(fd);
+        _exit(0);
+    }
+    if (p < 0) {
+        blog("wmt: fork patch daemon failed errno=%d\n", errno);
+        close(fd);
+        return -1;
+    }
+
+    int r;
+    r = ioctl(fd, WMT_IOCTL_SET_STP_MODE, WMT_HIF_ARG);
+    blog("wmt: SET_STP_MODE(0x%x) rc=%d errno=%d\n",
+         WMT_HIF_ARG, r, r ? errno : 0);
+    if (r < 0) {
+        close(fd);
+        return radar_loader_fallback();
+    }
+
+    /* Radar's launcher performs three setup ioctls after SET_STP_MODE. The
+     * kernel accepts SET_STP_MODE on its own but leaves HIF unset; the next
+     * /dev/wmtWifi write then fails with EIO. Values captured from the
+     * stock radar launcher. 0x07 takes a POINTER in the kernel's
+     * unlocked_ioctl -- it ran the whole power-on cycle and only then
+     * failed copy-out with EFAULT when handed the raw value 1 (2.3s in
+     * userspace, measured 2026-09-18) -- so pass the address of an int,
+     * like the stock launcher does. */
+    r = ioctl(fd, WMT_IOCTL_RADAR_SETUP_18, 0);
+    blog("wmt: radar setup 0x18 rc=%d errno=%d\n", r, r ? errno : 0);
+    r = ioctl(fd, WMT_IOCTL_RADAR_SETUP_0D, 0);
+    blog("wmt: radar setup 0x0d rc=%d errno=%d\n", r, r ? errno : 0);
+    int one = 1;
+    r = ioctl(fd, WMT_IOCTL_RADAR_SETUP_07, &one);
+    blog("wmt: radar setup 0x07 rc=%d errno=%d\n", r, r ? errno : 0);
+
     close(fd);
     return 0;
 }

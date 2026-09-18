@@ -37,6 +37,8 @@ __attribute__((weak)) int board_wifi_up(const char *patch_dir)
     return -1;
 }
 
+__attribute__((weak)) int board_wifi_prepare(void) { return 0; }
+
 __attribute__((weak)) void board_set_log(board_log_fn fn) { (void)fn; }
 
 /* No-op stub for the off-target tools. See the matching comment in

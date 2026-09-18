@@ -43,6 +43,7 @@ struct board_node { const char *path; int major, minor; };
 void board_set_log(board_log_fn fn);
 const struct board_node *board_nodes(size_t *count);
 int board_wifi_up(const char *patch_dir);
+int board_wifi_prepare(void);
 
 /* Tell the kernel's LED driver to release its hold on the ring.
  *

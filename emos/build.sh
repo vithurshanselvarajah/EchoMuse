@@ -102,15 +102,27 @@ if [ ! -f "$BOARD_SRC" ]; then
     exit 1
 fi
 
+# -g0 keeps DWARF out of the binary; without it the .debug_* sections add
+# ~3 MB to a 35 KB static ELF and we have shipped a 3.4 MB "init" that was
+# actually Android's /system/bin/init placed there by a bug — debug info
+# is the entire reason that mistake was silently bootable. -Os shrinks the
+# text further. llvm-strip then drops what little symbol table survives,
+# because we are not debugging init on hardware and the symbols do not help.
+# The NDK ships llvm-strip alongside clang; reach for the host's `strip` only
+# when the cc used was the system one (none of our builds run that way today,
+# but the path is exercised in CI).
 if [ -x "$CC" ]; then
-    "$CC" -static -O2 -Wall -DEMOS_BOARD="$EMOS_BOARD" -o "$WORK/init" \
+    "$CC" -static -Os -g0 -Wall -DEMOS_BOARD="$EMOS_BOARD" -o "$WORK/init" \
         "$HERE/init/init.c" "$BOARD_SRC"
+    STRIP=$(command -v llvm-strip || command -v strip)
+    "$STRIP" "$WORK/init"
 else
     echo "building init in the echomuse-compiler image ($CC not found)"
     docker run --rm -v "$HERE":/emos -v "$WORK":/out -w /emos echomuse-compiler \
-        bash -lc "$NDK/$TRIPLE-clang -static -O2 -Wall \
+        bash -lc "$NDK/$TRIPLE-clang -static -Os -g0 -Wall \
             -DEMOS_BOARD=$EMOS_BOARD -o /out/init \
-            init/init.c init/boards/boards_$EMOS_BOARD.c"
+            init/init.c init/boards/boards_$EMOS_BOARD.c && \
+            $(dirname $NDK/$TRIPLE-clang)/llvm-strip /out/init"
 fi
 
 # The ramdisk is init plus the empty mountpoints it needs. Everything else the
@@ -128,6 +140,23 @@ SUPPLICANT=${SUPPLICANT:-$HERE/prebuilt/wpa_supplicant}
 if [ -f "$SUPPLICANT" ]; then
     install -m 0755 "$SUPPLICANT" "$WORK/root/sbin/wpa_supplicant"
     echo "including wpa_supplicant ($(stat -c%s "$SUPPLICANT") bytes)"
+fi
+
+# Optional FireOS 6 WMT property shim. The stock launcher expects Android's
+# property service; a debug/test build can provide only the properties it
+# needs without making the property service part of emOS.
+#
+# Belt and braces: also REMOVE any shim left in the build tree from a
+# previous run, because init.c routes the wifi bring-up on the presence of
+# this file. A stale shim silently bypasses board_wifi_up() and the kernel's
+# own bring-up hangs in STP init forever. Verified on radar 2026-09-18: the
+# launcher path needs every property the stock HAL reads, the shim provides
+# one, and the result is "wifi tools started" with no wlan0 ever appearing.
+rm -f "$WORK/root/sbin/libwmtprops.so"
+WMT_PROP_SHIM=${WMT_PROP_SHIM:-}
+if [ -f "$WMT_PROP_SHIM" ]; then
+    install -m 0755 "$WMT_PROP_SHIM" "$WORK/root/sbin/libwmtprops.so"
+    echo "including WMT property shim"
 fi
 
 # wpa_cli and em-wifi, the console's way to set WiFi without the wizard. The

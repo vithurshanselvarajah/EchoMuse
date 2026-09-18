@@ -1353,6 +1353,30 @@ static pid_t spawn(char *const argv[])
     return pid;
 }
 
+/* Spawn the launcher with the property shim preloaded. Used only as a last
+ * resort, on boards where board_wifi_up() refused — the shim gives the
+ * stock launcher the one Android property it absolutely needs. Other
+ * children go through plain spawn() above. */
+static pid_t spawn_with_shim(char *const argv[])
+{
+    if (access("/sbin/libwmtprops.so", R_OK) != 0)
+        return spawn(argv);
+    pid_t pid = fork();
+    if (pid == 0) {
+        char *envp[] = { "HOME=/", "ANDROID_ROOT=/system", "ANDROID_DATA=/data",
+                         "PATH=/sbin:/system/bin:/system/xbin",
+                         "LD_PRELOAD=/sbin/libwmtprops.so", NULL };
+        int n = netlog_open();
+        if (n < 0) n = open("/dev/null", O_RDWR);
+        if (n >= 0) { dup2(n, 1); dup2(n, 2); if (n > 2) close(n); }
+        int z = open("/dev/null", O_RDONLY);
+        if (z >= 0) { dup2(z, 0); if (z > 0) close(z); }
+        execve(argv[0], argv, envp);
+        _exit(127);
+    }
+    return pid;
+}
+
 /* Read a small integer out of a sysfs file; -1 if it cannot be read. */
 static int readint(const char *path)
 {
@@ -1688,6 +1712,8 @@ static void net_main(void)
     char **dhcp = vendor ? dhcp_fos6 : dhcp_fos5;
     int st = 0;
 
+    if (vendor && board_wifi_prepare())
+        netlog("wmt: radar chip preparation failed\n");
     waitpid(spawn(loader), &st, 0);
     netlog("wmt_loader status=%d\n", st);
 
@@ -1701,8 +1727,22 @@ static void net_main(void)
      * bring-up is a single function call from init.c's point of view. */
     pid_t launcher = -1;
     if (vendor) {
-        if (board_wifi_up("/system/vendor/firmware/"))
-            netlog("wmt: bring-up failed, wlan0 will not appear\n");
+        /* Try the board runtime FIRST. Its job is to do everything the
+         * stock launcher does, against this kernel, without Android's
+         * property service. Only fall back to the launcher when the board
+         * runtime refuses — and a shimmed launcher is NOT a win on radar,
+         * because the shim provides ONE property and the launcher reads
+         * several. With the shim the launcher enters its retry loop, the
+         * kernel's mtk_wmtd logs "no hif info" forever, and /dev/wmtWifi
+         * returns EIO. Verified 2026-09-18 on radar.
+         *
+         * The launcher path stays reachable for boards that have not yet
+         * written a board_wifi_up() — a stock launcher with a property
+         * service that works still beats no wifi. */
+        if (board_wifi_up("/system/vendor/firmware/") != 0) {
+            launcher = spawn_with_shim(launch);
+            netlog("wmt: board runtime failed, falling back to launcher\n");
+        }
     } else {
         launcher = spawn(launch);
     }
