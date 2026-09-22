@@ -36,8 +36,9 @@ func NewMicrophone() (*PcmMicrophone, error) {
 	// side reference; the loopback lives on ch7/ch8 of biscuit only).
 	// Reading config.Get() here is the boot path -- it is initialised
 	// from env at first call, so this works before any controller push.
-	micCfg := config.Get().Snapshot()
-	channels := micCfg.MicChannels
+	// Read MicChannels off the *Device (env-only, never pushed) rather
+	// than Snapshot() -- the field does not belong on the wire config.
+	channels := config.Get().MicChannels
 	if channels != 8 && channels != 9 {
 		// Unknown value: fall back to the existing safe behaviour
 		// rather than guessing. Matches the project rule of degrading to
