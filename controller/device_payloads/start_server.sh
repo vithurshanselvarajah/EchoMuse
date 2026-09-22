@@ -40,6 +40,41 @@ if [ -e /dev/__properties__ ]; then
     done
 fi
 
+# ── Board-detected capture shape ─────────────────────────────────────────────
+# pcmC0D24c carries 9 channels on biscuit (8 mics + 1 hardware AEC loopback
+# reference on ch8, a side-effect of the biscuit codec board wiring) and 8
+# on radar (Echo 2, MT8163) — no codec-side loopback there. The firmware
+# reads MIC_CHANNELS at NewMicrophone() and uses it for the ALSA Config,
+# so the wrong value reads in the wrong place every period and the
+# beamformer's per-period framing is off by one channel.
+#
+# Default 9 keeps every stock biscuit device reading the existing probe
+# data fixture unchanged; only radar sets 8.
+#
+# Two probes:
+#  - getprop ro.product.model — FireOS path. Radar identifies as "AEORD"
+#    (verified against the dump at device/tools/radar_dump/README.md),
+#    biscuit as "AEOBC" or similar. Default to substring match against
+#    "AEORD" so any future productid spelling stays caught.
+#  - grep /proc/cmdline for "emos.board=radar" — emOS path. mkboot.py
+#    stamps the board onto the image cmdline so the boot script does not
+#    have to guess; this is the same stamp the firmware uses to pick
+#    which boards_*.c to link (emos/init/init.c cmdline_board()).
+is_radar=0
+if [ -e /dev/__properties__ ]; then
+    ro_product_model=$(getprop ro.product.model 2>/dev/null || true)
+    case "$ro_product_model" in
+        *AEORD*) is_radar=1 ;;
+    esac
+else
+    if grep -q 'emos.board=radar' /proc/cmdline 2>/dev/null; then
+        is_radar=1
+    fi
+fi
+if [ "$is_radar" = "1" ]; then
+    export MIC_CHANNELS=8
+fi
+
 # ── Hardware init ─────────────────────────────────────────────────────────────
 ip link set p2p0 down
 
