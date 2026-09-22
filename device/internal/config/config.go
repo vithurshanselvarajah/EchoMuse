@@ -121,6 +121,18 @@ type Device struct {
 	// how it stays unmeasured.
 	AecRefSource string
 
+	// MicChannels is the number of audio channels in each ALSA capture
+	// period read from pcmC0D24c. biscuit emits 9 (8 mics + 1 hardware
+	// AEC loopback reference on ch8); radar (Echo 2, MT8163) emits 8
+	// with no in-codec reference. Default 9 preserves today's behaviour,
+	// so a unit that never sets MIC_CHANNELS continues to work on
+	// biscuit. Set on radar to 8 once the capture shape is confirmed on
+	// hardware -- tinypcminfo -D 0 -d 24 was observed to hang and cannot
+	// be queried from here. Env var, not config-pushed, because it is a
+	// property of the board and not an operator setting; the same
+	// rationale as MicGainDb.
+	MicChannels int
+
 	// BLE proxy (passive scan over /dev/stpbt, internal/bluetooth) —
 	// pointer typed so false is expressible over the wire. Default off.
 	BleProxyEnabled *bool
@@ -166,6 +178,11 @@ func (d *Device) loadDefaults() {
 	d.AdcDigitalGain = envInt("ADC_DIGITAL_GAIN", 88)
 	d.AdcMicpga = envInt("ADC_MICPGA", 40)
 	d.MicGainDb = clampMicGainDb(envInt("MIC_GAIN_DB", 24))
+	// MIC_CHANNELS is the number of channels in the ALSA capture period
+	// (pcmC0D24c). 9 for biscuit (8 mics + 1 loopback ref); 8 for radar.
+	// Default 9 keeps a stock biscuit reading the existing probe data
+	// fixture. Set on radar by editing start_server.sh.
+	d.MicChannels = envInt("MIC_CHANNELS", 9)
 	d.BeamAngle = envFloat("BEAM_ANGLE", -1)
 	d.BeamformingEnabled = envBool("BEAMFORMING_ENABLED", true)
 	agcEnabled := envBool("AGC_ENABLED", true)
@@ -325,23 +342,23 @@ func (d *Device) Snapshot() ConfigMessage {
 // ConfigMessage mirrors the JSON shape of the config control message
 // sent by the controller. JSON tags must match em_controller.py exactly.
 type ConfigMessage struct {
-	Type               string   `json:"type,omitempty"`
+	Type string `json:"type,omitempty"`
 	// Pointer typed so 0 is expressible. Both are raw tinymix control
 	// values and 0 is the bottom of each control's own range — a legitimate
 	// setting, and the one somebody reaches for in a loud room. Under the
 	// "non-zero means set" rule they were silently ignored: the dashboard
 	// slider offers 0, the config stored 0, and the device carried on at
 	// whatever gain it already had.
-	AdcDigitalGain     *int     `json:"adcDigitalGain,omitempty"`
-	AdcMicpga          *int     `json:"adcMicpga,omitempty"`
-	MicGainDb          *int     `json:"micGainDb,omitempty"`
-	StartupVolume      int      `json:"startupVolume,omitempty"`
-	VadThreshold       float64  `json:"vadThreshold,omitempty"`
-	VadSpeechMs        int      `json:"vadSpeechMs,omitempty"`
-	VadSilenceMs       int      `json:"vadSilenceMs,omitempty"`
-	OwwThreshold       float64  `json:"owwThreshold,omitempty"`
-	OwwModel           string   `json:"owwModel,omitempty"`
-	OwwOnDevice        string   `json:"owwOnDevice,omitempty"`
+	AdcDigitalGain *int    `json:"adcDigitalGain,omitempty"`
+	AdcMicpga      *int    `json:"adcMicpga,omitempty"`
+	MicGainDb      *int    `json:"micGainDb,omitempty"`
+	StartupVolume  int     `json:"startupVolume,omitempty"`
+	VadThreshold   float64 `json:"vadThreshold,omitempty"`
+	VadSpeechMs    int     `json:"vadSpeechMs,omitempty"`
+	VadSilenceMs   int     `json:"vadSilenceMs,omitempty"`
+	OwwThreshold   float64 `json:"owwThreshold,omitempty"`
+	OwwModel       string  `json:"owwModel,omitempty"`
+	OwwOnDevice    string  `json:"owwOnDevice,omitempty"`
 	// ConsolePassword is the hashed record emOS's init checks before handing
 	// over a shell on the USB serial console. A POINTER, and it has to be: an
 	// EMPTY record is the legitimate "no password" setting, so with a plain
@@ -352,7 +369,7 @@ type ConfigMessage struct {
 	// Consumed by the firmware only to write it to disk for init — the
 	// firmware never checks it, because the console must work when the
 	// firmware is not running. Ignored on FireOS, which uses adbd.
-	ConsolePassword    *string  `json:"consolePassword,omitempty"`
+	ConsolePassword *string `json:"consolePassword,omitempty"`
 	// ConsoleTimeoutMin is the emOS console idle timeout in MINUTES: 0 for no
 	// timeout, otherwise 1-90. A POINTER for ConsolePassword's reason — zero
 	// is the legitimate "no timeout" setting, so with omitempty it would be
