@@ -5593,6 +5593,44 @@ EMOS_SBIN_BOTH_ARCHES = ("em-wifi",)
 EMOS_PAYLOAD_ASSET = "emos-payload.zip"
 
 
+def _select_emos_payload(files: dict[str, bytes], arch: str,
+                        version: str, board: str = "biscuit") -> tuple:
+    """Select and validate the init and /sbin files from an uploaded bundle.
+
+    Keep the local-upload path subject to the same architecture and Wi-Fi
+    requirements as a published release; the manifest only checks file hashes.
+    Returns (init, sbin, version, error), like `_fetch_emos_payload`.
+    """
+    try:
+        init_name = em_emos_build.init_asset_name(arch, board)
+    except em_emos_build.BuildError as exc:
+        return None, {}, version, _error("unsupported_board", str(exc), 400)
+
+    init = files.get(init_name)
+    if init is None:
+        return None, {}, version, _error(
+            "no_init_for_arch",
+            f"Uploaded payload carries no '{init_name}', so there is no init "
+            f"for this device's {arch} kernel.", 400)
+    problems = em_emos_build.init_binary_problems(init, arch)
+    if problems:
+        return None, {}, version, _error(
+            "bad_payload", f"The {init_name} in the uploaded payload is not "
+            f"usable: {'; '.join(problems)}", 400)
+
+    sbin = {name: files[name] for name in EMOS_SBIN_BOTH_ARCHES
+            if name in files}
+    if arch == em_emos_build.ARCH_ARM:
+        missing = [name for name in EMOS_SBIN_ASSETS if name not in files]
+        if missing:
+            return None, {}, version, _error(
+                "no_wifi_tools_for_arch",
+                f"Uploaded payload is missing {', '.join(missing)}. A 32-bit "
+                "emOS image needs its own Wi-Fi tools.", 400)
+        sbin.update({name: files[name] for name in EMOS_SBIN_ASSETS})
+    return init, sbin, version, None
+
+
 async def _fetch_emos_payload(arch: str, board: str = "biscuit") -> tuple:
     """Everything an emOS image needs for `arch`, from ONE release.
 
