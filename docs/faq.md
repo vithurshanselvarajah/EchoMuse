@@ -181,6 +181,24 @@ Update the controller to **2.24.1** and the device to **v2.16.0**. Earlier
 firmware left part of the speaker path switched off on FireOS 6's kernel
 ([#587](https://github.com/wilbowes/EchoMuse/issues/587)).
 
+### How do I update emOS?
+Open the Echo in the dashboard and go to **Updates**. An Echo on emOS has an
+**emOS** panel there with the version it runs and the newest release; press
+**Update**. This needs a controller newer than 2.25.0 and installs emOS 0.10
+or later. On an older controller, re-run the wizard's build and flash steps
+instead.
+
+The Echo restarts and is back in about a minute, with its WiFi, settings and
+console password untouched. If the new image does not reach the controller,
+the Echo restarts itself every three minutes and, after three tries, puts the
+previous image back and shows an amber ring. That takes about eleven minutes,
+and the Echo's log then says it rolled back.
+
+**Keep the Echo powered while it updates.** A power cut during the second or
+so in which the boot partition is written leaves an image that cannot start,
+and recovering from that needs TWRP, a USB cable and the provisioning wizard.
+Nothing after that write can leave it in that state.
+
 ### How do I run the wizard again on an emOS device?
 emOS has no adb, so the wizard cannot see it directly. Open the USB console,
 run `/init recovery`, and the Echo reboots into TWRP, where the wizard's first

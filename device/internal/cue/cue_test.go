@@ -135,6 +135,94 @@ func TestRendersAtOtherRates(t *testing.T) {
 	}
 }
 
+func TestVolumeCueTracksTheSelectedVolume(t *testing.T) {
+	full := VolumeCue(rate, 1)
+	quiet := VolumeCue(rate, 0.1)
+	if len(full) == 0 || len(quiet) != len(full) {
+		t.Fatalf("volume cues have lengths full=%d quiet=%d", len(full), len(quiet))
+	}
+	peak := func(samples []float64) float64 {
+		var out float64
+		for _, v := range samples {
+			out = math.Max(out, math.Abs(v))
+		}
+		return out
+	}
+	ratio := peak(quiet) / peak(full)
+	if math.Abs(ratio-0.1) > 0.001 {
+		t.Errorf("quiet/full peak ratio = %.4f, want 0.1", ratio)
+	}
+	if full[0] != 0 || math.Abs(full[len(full)-1]) > 1e-9 {
+		t.Error("volume cue must fade from and to zero")
+	}
+	if got := VolumeCue(rate, 0); got != nil {
+		t.Errorf("zero volume rendered %d samples, want silence", len(got))
+	}
+	wantPeak := math.Pow(10, volumePeakDB/20.0) * 32768.0
+	if got := peak(full); math.Abs(got-wantPeak) > 0.01 {
+		t.Errorf("full-volume peak = %.2f, want %.2f (%.1fdBFS)", got, wantPeak, volumePeakDB)
+	}
+}
+
+func TestVolumeButtonPreviewRepeatsAtMaximum(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		direction string
+		changed   bool
+		atMax     bool
+		want      bool
+	}{
+		{"ordinary up", "up", true, false, true},
+		{"ordinary down", "down", true, false, true},
+		{"up again at maximum", "up", false, true, true},
+		{"unchanged up below maximum", "up", false, false, false},
+		{"down at lower boundary", "down", false, false, false},
+		{"down while at maximum", "down", false, true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := VolumeButtonPreviewDue(tc.direction, tc.changed, tc.atMax); got != tc.want {
+				t.Errorf("VolumeButtonPreviewDue(%q, %v, %v) = %v, want %v",
+					tc.direction, tc.changed, tc.atMax, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestVolumeCueIsASingleDecayingBeep(t *testing.T) {
+	c := VolumeCue(rate, 1)
+	wantLen := int(rate * volumeMS / 1000)
+	if len(c) != wantLen {
+		t.Fatalf("volume cue has %d samples, want %d", len(c), wantLen)
+	}
+	if volumeHz <= BingHz/2 || volumeHz >= BongHz/2 {
+		t.Fatalf("volume cue %.0fHz is not between the half-pitches of the wake cue", volumeHz)
+	}
+
+	// It begins as a definite beep, then the same note remains audible while
+	// decaying. A flat electronic alert would have comparable RMS throughout;
+	// a hard cutoff would have no measurable release window.
+	rms := func(x []float64) float64 {
+		var sum float64
+		for _, v := range x {
+			sum += v * v
+		}
+		return math.Sqrt(sum / float64(len(x)))
+	}
+	window := func(startMS, endMS float64) []float64 {
+		return c[int(rate*startMS/1000):int(rate*endMS/1000)]
+	}
+	body := rms(window(10, 35))
+	release := rms(window(75, 120))
+	if release < body*0.08 || release > body*0.4 {
+		t.Errorf("volume cue release RMS %.1f is not a short, audible decay from body %.1f", release, body)
+	}
+	for i, v := range c {
+		if v > math.MaxInt16 || v < math.MinInt16 {
+			t.Fatalf("full-volume cue clips at sample %d: %.1f", i, v)
+		}
+	}
+}
+
 // Writes the cue as a WAV for a listening test. Off by default — this is for
 // auditioning a taste parameter, which no assertion can settle.
 //

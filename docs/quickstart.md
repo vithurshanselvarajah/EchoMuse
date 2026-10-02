@@ -220,7 +220,7 @@ The LED ring tells you what's happening:
   (the gear icon) or per device. See [configuration.md](configuration.md).
 - **Terminal**: each device page has a full remote terminal (for the
   curious; you never *need* it).
-- **Volume**: buttons on the Dot, the dashboard slider, or Home Assistant's
+- **Volume**: buttons on the Dot or Home Assistant's
   media player card — they all stay in sync.
 - **Interrupting**: with barge-in enabled, say the wake word while it's
   talking and it stops and listens. The mute button also cuts it off

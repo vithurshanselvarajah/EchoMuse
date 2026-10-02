@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -44,7 +45,7 @@ type Client struct {
 	cfg    Config
 	store  *store
 	player *player
-	oc     *OutputClock // the speaker goroutine's alone, via Fill
+	oc     atomic.Pointer[OutputClock] // made and fed by the speaker goroutine (Fill); read for diagnostics
 
 	mu         sync.Mutex
 	admitted   *session
@@ -307,13 +308,23 @@ func (c *Client) applySettings(p playerSettings) {
 
 // Fill is the speaker's pull: one stereo period whose first frame reaches the
 // DAC at playAt, as MEASURED — it is smoothed here (OutputClock), so the
-// caller passes its raw reading. False when there is nothing to play then.
+// caller passes its raw reading, and how uncertain that reading is. A reading
+// the scheduler interrupted is not learned from: the tracker coasts on its
+// prediction for that period. False when there is nothing to play then.
 // Called from one goroutine only.
-func (c *Client) Fill(out []byte, playAt time.Time) bool {
-	if c.oc == nil {
-		c.oc = NewOutputClock(time.Duration(len(out)/4) * time.Second / outRate)
+func (c *Client) Fill(out []byte, playAt time.Time, uncertain time.Duration) bool {
+	oc := c.oc.Load()
+	if oc == nil {
+		oc = NewOutputClock(time.Duration(len(out)/4) * time.Second / outRate)
+		c.oc.Store(oc)
 	}
-	return c.player.Fill(out, c.oc.Observe(playAt))
+	var at time.Time
+	if uncertain > outClockTrust {
+		at = oc.Coast(playAt)
+	} else {
+		at = oc.Observe(playAt)
+	}
+	return c.player.Fill(out, at)
 }
 
 // Active reports whether Sendspin has audio queued: the speaker's cue that
@@ -322,6 +333,26 @@ func (c *Client) Active() bool { return c.player.active() }
 
 // Buffered is how much audio is queued and not yet played.
 func (c *Client) Buffered() time.Duration { return c.player.buffered() }
+
+// OutDiag takes the DAC position tracker's summary since the last call.
+func (c *Client) OutDiag() OutDiag {
+	if oc := c.oc.Load(); oc != nil {
+		return oc.TakeDiag()
+	}
+	return OutDiag{}
+}
+
+// SyncDiag takes the connected server's time-exchange summary since the last
+// call; false with no server connected.
+func (c *Client) SyncDiag() (SyncDiag, bool) {
+	c.mu.Lock()
+	s := c.admitted
+	c.mu.Unlock()
+	if s == nil {
+		return SyncDiag{}, false
+	}
+	return s.filter.takeDiag(), true
+}
 
 func (c *Client) hello() clientHello {
 	return clientHello{

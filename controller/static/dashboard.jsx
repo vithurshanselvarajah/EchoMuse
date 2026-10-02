@@ -1115,6 +1115,89 @@ function turnSegments(t) {
   return { listen, transcribe, respond, shown: listen + transcribe + respond };
 }
 
+function WakeSampleReview({ deviceId, isAdmin }) {
+  const [samples, setSamples] = useState([]);
+  const [playing, setPlaying] = useState(null);
+  const audioRef = useRef(null);
+  const urlsRef = useRef({});
+  const mono = "'DM Mono',monospace";
+
+  const load = async () => {
+    if (!isAdmin) return;
+    try { setSamples(await API.get(`/api/devices/${deviceId}/wake-samples?limit=50`) || []); }
+    catch {}
+  };
+  useEffect(() => {
+    load();
+    const timer = setInterval(load, 5000);
+    return () => {
+      clearInterval(timer);
+      if (audioRef.current) audioRef.current.pause();
+      Object.values(urlsRef.current).forEach(URL.revokeObjectURL);
+      urlsRef.current = {};
+    };
+  }, [deviceId, isAdmin]);
+
+  const sampleUrl = async sample => {
+    if (urlsRef.current[sample.id]) return urlsRef.current[sample.id];
+    try {
+      const url = URL.createObjectURL(await API.blob(
+        `/api/devices/${deviceId}/wake-samples/${sample.id}/audio`));
+      urlsRef.current[sample.id] = url;
+      return url;
+    } catch { return null; }
+  };
+  const play = async sample => {
+    if (audioRef.current) audioRef.current.pause();
+    if (playing === sample.id) { audioRef.current = null; setPlaying(null); return; }
+    const url = await sampleUrl(sample);
+    if (!url) return;
+    const audio = new Audio(url);
+    audioRef.current = audio;
+    audio.onended = audio.onerror = () => setPlaying(p => p === sample.id ? null : p);
+    setPlaying(sample.id);
+    audio.play().catch(() => setPlaying(null));
+  };
+  const label = async (sample, value) => {
+    try {
+      await API.patch(`/api/devices/${deviceId}/wake-samples/${sample.id}`, { label: value });
+      setSamples(rows => rows.map(row => row.id === sample.id ? { ...row, label: value } : row));
+    } catch {}
+  };
+  const remove = async sample => {
+    if (!window.confirm('Delete this saved wake sample?')) return;
+    try {
+      await API.del(`/api/devices/${deviceId}/wake-samples/${sample.id}`);
+      setSamples(rows => rows.filter(row => row.id !== sample.id));
+      if (urlsRef.current[sample.id]) URL.revokeObjectURL(urlsRef.current[sample.id]);
+      delete urlsRef.current[sample.id];
+    } catch {}
+  };
+  const download = async sample => {
+    const url = await sampleUrl(sample);
+    if (!url) return;
+    const a = document.createElement('a'); a.href = url;
+    a.download = `wake-sample-${sample.id}.wav`; a.click();
+  };
+
+  if (!isAdmin || !samples.length) return null;
+  return <div style={{ marginTop: 16, borderTop: '1px solid var(--track)', paddingTop: 12 }}>
+    <div className="em-label" style={{ marginBottom: 8 }}>Wake-word samples · newest 50</div>
+    <div style={{ maxHeight: 220, overflowY: 'auto' }}>
+      {samples.map(sample => <div key={sample.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '5px 2px', borderBottom: '1px solid var(--hairline)', fontFamily: mono, fontSize: 10 }}>
+        <span style={{ color: 'var(--muted)', width: 72, flexShrink: 0 }}>{new Date(sample.ts * 1000).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</span>
+        <button onClick={() => play(sample)} title="Play wake sample" style={{ background: 'none', border: 0, color: 'var(--text2)', cursor: 'pointer' }}>{playing === sample.id ? '▮' : '▶'}</button>
+        <span style={{ flex: 1, color: 'var(--text2)' }}>{sample.kind}{sample.score != null ? ` · controller ${sample.score.toFixed(3)}` : ''}{sample.threshold != null ? ` / ${sample.threshold.toFixed(2)}` : ''}{sample.device_score != null ? ` · Echo ${sample.device_score.toFixed(3)}` : ''}{sample.trigger_source ? ` · ${sample.trigger_source}` : ''}</span>
+        <select value={sample.label} onChange={e => label(sample, e.target.value)} aria-label="Wake sample label" style={{ fontSize: 10, maxWidth: 105 }}>
+          <option value="unreviewed">Review…</option><option value="wake">Wake word</option><option value="not_wake">Not wake word</option><option value="uncertain">Unsure</option>
+        </select>
+        <button onClick={() => download(sample)} title="Download WAV" style={{ background: 'none', border: 0, color: 'var(--muted)', cursor: 'pointer' }}>⤓</button>
+        <button onClick={() => remove(sample)} title="Delete sample" style={{ background: 'none', border: 0, color: 'var(--muted)', cursor: 'pointer' }}>×</button>
+      </div>)}
+    </div>
+  </div>;
+}
+
 function TurnObservability({ turns, deviceId, deviceLabel, recordingsOn, nearMisses, stateLabel, stateColor, isAdmin }) {
   const [hover, setHover] = useState(null); // index into `recent`
   const mono = "'DM Mono',monospace";
@@ -1289,6 +1372,7 @@ function TurnObservability({ turns, deviceId, deviceLabel, recordingsOn, nearMis
           })()}
         </div>
       )}
+      <WakeSampleReview deviceId={deviceId} isAdmin={isAdmin}/>
     </div>
   );
 }
@@ -1481,6 +1565,9 @@ function Detail({ device, token, onClose, onApprove, isAdmin, globalConfig, onDe
   const [logsLoading, setLogsLoading] = useState(false);
   const [pushLog, setPushLog] = useState([]);
   const [pushing, setPushing] = useState(false);
+  const [emosBusy, setEmosBusy] = useState(false);
+  const [emosFile, setEmosFile] = useState(null);
+  const emosFileRef = useRef(null);
   const [release, setRelease] = useState(null);
   const [checkingRelease, setCheckingRelease] = useState(false);
   // Whether the background release poll runs (#159). Defaults TRUE so a
@@ -1813,6 +1900,57 @@ function Detail({ device, token, onClose, onApprove, isAdmin, globalConfig, onDe
           clearInterval(poll); setPushing(false);
         }
       } catch(e) { clearInterval(poll); setPushing(false); }
+    }, 3000);
+  }
+
+  // emOS update (#573). The controller owns every step and reports the one it
+  // is on, so this only starts it and relays: there is no client-side guess
+  // at the outcome to get wrong, and no attempt cap — a rollback takes ten
+  // minutes and the server bounds the wait itself.
+  async function doEmosUpdate(file) {
+    const name = device.label || device.device_id;
+    if (!confirm(`Update emOS on ${name}?\n\nThe Echo restarts and is offline for about a minute. `
+        + `Keep it powered while the update runs: a power cut while the boot partition `
+        + `is being written (about a second) leaves it needing TWRP and a USB cable.`)) return;
+    setEmosBusy(true);
+    setPushLog([file ? `Uploading ${file.name}…` : 'Starting emOS update…']);
+    try {
+      let body = {};
+      if (file) {
+        const up = await API.upload('/api/emos/upload', file, 'payload');
+        setPushLog(l => [...l, `✓ Payload ${up.version} uploaded`]);
+        body = { upload_token: up.upload_token };
+      }
+      const res = await API.post(`/api/devices/${device.device_id}/emos_update`, body);
+      setEmosFile(null);
+      if (emosFileRef.current) emosFileRef.current.value = '';
+      _pollEmosUpdate(res.version);
+    } catch(e) {
+      setPushLog(l => [...l, `Error: ${e.error || 'emOS update failed'}`]);
+      setEmosBusy(false);
+    }
+  }
+
+  function _pollEmosUpdate(version) {
+    let last = '';
+    let failures = 0;
+    const poll = setInterval(async () => {
+      try {
+        const devices = await API.get('/api/devices');
+        const d = devices.find(x => x.device_id === device.device_id);
+        failures = 0;
+        const stage = d?.emos_update_queued ? 'Queued behind another update' : d?.emos_update_stage;
+        if (stage && stage !== last) { last = stage; setPushLog(l => [...l, stage]); }
+        if (d && !d.emos_update_in_progress && !d.emos_update_queued) {
+          setPushLog(l => [...l, d.emos_update_error
+            ? `Error: ${d.emos_update_error}`
+            : `✓ emOS ${_emosLabel(version)} running and confirmed`]);
+          clearInterval(poll); setEmosBusy(false);
+        }
+      } catch(e) {
+        // The controller being briefly unreachable is not the update failing.
+        if (++failures > 20) { clearInterval(poll); setEmosBusy(false); }
+      }
     }, 3000);
   }
 
@@ -2308,6 +2446,7 @@ function Detail({ device, token, onClose, onApprove, isAdmin, globalConfig, onDe
                 localCapable={!device.connected || !!device.owwLocalCapable}
                 listen={device.connected ? device.listen : null}
                 wakeCueCapable={!device.connected || !!device.wakeCueCapable}
+                volumeCueCapable={!device.connected || !!device.volumeCueCapable}
                 sendspinCapable={!device.connected || !!device.sendspinCapable}
                 sendspinPanel={device.connected && device.sendspinCapable
                   ? <SendspinPairing deviceId={device.device_id} status={device.sendspin} isAdmin={isAdmin}/>
@@ -2394,7 +2533,7 @@ function Detail({ device, token, onClose, onApprove, isAdmin, globalConfig, onDe
                     state, then act, then detail. */}
                 <div style={{ display:'flex', alignItems:'center', gap:10, flexWrap:'wrap', marginTop:16 }}>
                   <Pill accent={device.connected && !pushing && needsUpdate}
-                        disabled={!device.connected || pushing || !needsUpdate}
+                        disabled={!device.connected || pushing || emosBusy || !needsUpdate}
                         onClick={doUpdate}>
                     {pushing && !localFile ? 'Updating…'
                       : needsUpdate ? `Update to ${release?.version || 'latest'}` : 'Up to date'}
@@ -2453,6 +2592,67 @@ function Detail({ device, token, onClose, onApprove, isAdmin, globalConfig, onDe
                   </div>
                 )}
               </Panel>
+
+              {/* emOS (#573). Its own panel because it updates
+                  independently of the firmware: different release, different
+                  thing written, different way back. Only on a device that has
+                  said it runs emOS. */}
+              {device.baseOs === 'emos' && (() => {
+                const busy = emosBusy || device.emos_update_in_progress || device.emos_update_queued;
+                const avail = !!device.emosUpdateAvailable;
+                return (
+                <Panel label="emOS">
+                  <div style={{ display:'flex', alignItems:'flex-end', justifyContent:'space-between', gap:16, flexWrap:'wrap' }}>
+                    <div style={{ display:'flex', gap:16, alignItems:'flex-end', flexWrap:'wrap', minWidth:0 }}>
+                      <Lcd label="On device" value={_emosLabel(device.emosVersion) || '—'} maxChars={16} color={device.emosOffer === 'current' ? 'var(--lcd-green)' : 'var(--lcd-amber)'}/>
+                      <Lcd label="Available" value={_emosLabel(device.emosLatest) || '—'} maxChars={16} color="var(--lcd-dim)"/>
+                    </div>
+                    <span style={{ fontFamily:"'DM Mono',monospace", fontSize:11, color: avail ? 'var(--warn)' : device.emosOffer === 'current' ? 'var(--ok)' : 'var(--muted)' }}>
+                      {!device.emosVersion ? 'Version not read yet'
+                        : !device.emosLatest ? 'No release info'
+                        : avail ? `Update ${_emosLabel(device.emosLatest)} available`
+                        : device.emosOffer === 'wizard' ? `${_emosLabel(device.emosLatest)} installs with the wizard`
+                        : device.emosOffer === 'current' ? 'Up to date' : 'Version not recognised'}
+                    </span>
+                  </div>
+                  <div style={{ display:'flex', alignItems:'center', gap:10, flexWrap:'wrap', marginTop:16 }}>
+                    <Pill accent={device.connected && !busy && !pushing && avail}
+                          disabled={!device.connected || busy || pushing || !avail}
+                          onClick={() => doEmosUpdate(null)}>
+                      {busy ? 'Updating…' : avail ? `Update to ${_emosLabel(device.emosLatest)}`
+                        : device.emosOffer === 'current' ? 'Up to date' : 'No update'}
+                    </Pill>
+                    <span style={{ fontFamily:"'DM Mono',monospace", fontSize:9, color:'var(--muted)', lineHeight:1.5, flex:'1 1 220px', minWidth:0 }}>
+                      Restarts the Echo. It restores the previous image by itself
+                      if the new one fails. Keep it powered while it updates.
+                    </span>
+                  </div>
+                  {/* The developer path, as Local Build is for firmware. */}
+                  <div style={{ display:'flex', gap:10, alignItems:'center', flexWrap:'wrap', marginTop:14, borderTop:'1px solid var(--hairline)', paddingTop:10 }}>
+                    <input ref={emosFileRef} type="file" accept=".zip" style={{ display:'none' }}
+                      onChange={e => setEmosFile(e.target.files[0] || null)}/>
+                    <Pill small onClick={() => emosFileRef.current?.click()} disabled={busy}>
+                      {emosFile ? '⇄ Change' : 'Local payload'}
+                    </Pill>
+                    {emosFile ? (
+                      <>
+                        <span style={{ fontFamily:"'DM Mono',monospace", fontSize:10, color:'var(--text2)', flex:1, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', minWidth:0 }}>
+                          {emosFile.name} · {(emosFile.size/1024).toFixed(0)} KB
+                        </span>
+                        <Pill small danger onClick={() => setEmosFile(null)} disabled={busy}>✕</Pill>
+                        <Pill small accent disabled={!device.connected || busy || pushing} onClick={() => doEmosUpdate(emosFile)}>
+                          Install
+                        </Pill>
+                      </>
+                    ) : (
+                      <span style={{ fontFamily:"'DM Mono',monospace", fontSize:9, color:'var(--muted)' }}>
+                        An emos-payload.zip built from emos/.
+                      </span>
+                    )}
+                  </div>
+                </Panel>
+                );
+              })()}
 
               {/* The GitHub Release panel that used to sit here held one
                   button, which now lives beside the version state above.
@@ -2659,7 +2859,7 @@ function Detail({ device, token, onClose, onApprove, isAdmin, globalConfig, onDe
                     textShadow: line.startsWith('✓') ? '0 0 8px rgba(140,200,100,0.4)' : 'none',
                   }}>{line}</div>
                 ))}
-                {pushing && <span style={{ color:'var(--lcd-dim)' }}>▌</span>}
+                {(pushing || emosBusy) && <span style={{ color:'var(--lcd-dim)' }}>▌</span>}
               </div>
             </div>
           )}
@@ -3052,6 +3252,11 @@ function _middleEllipsis(text, max, tail) {
   const keepEnd = Math.min(tail ?? Math.max(2, Math.floor(max / 3)), max - 2);
   const keepStart = max - 1 - keepEnd;
   return text.slice(0, keepStart).trimEnd() + '…' + text.slice(text.length - keepEnd).trimStart();
+}
+
+// "emos-v0.9" as "0.9": the panel is already labelled emOS.
+function _emosLabel(v) {
+  return v ? String(v).replace(/^emos-v/, '') : '';
 }
 
 function _baseOsLabel(baseOs) {
@@ -8955,8 +9160,8 @@ const STAGE_MONO = "'DM Mono',monospace";
 // control sitting under a toggle that does not govern it would look fine and
 // be silently wrong.
 const CONFIG_SECTIONS = {
-  "playback": ["eqBands", "eqLoudness", "duckDb", "limiterEnabled", "limiterThreshold", "limiterRelease", "bassGuardEnabled", "bassGuardDb", "streamReply"],
-  "wakeword": ["owwModel", "owwThreshold", "owwSpeexNs", "bargeInEnabled", "bargeInThreshold", "wakeArbitrationMs", "owwOnDevice", "wakeSound", "wakeSoundLevel"],
+  "playback": ["eqBands", "eqLoudness", "duckDb", "limiterEnabled", "limiterThreshold", "limiterRelease", "bassGuardEnabled", "bassGuardDb", "streamReply", "volumeButtonSound"],
+  "wakeword": ["owwModel", "owwThreshold", "owwSpeexNs", "bargeInEnabled", "bargeInThreshold", "wakeArbitrationMs", "owwOnDevice", "wakeSound", "wakeSoundLevel", "wakeClipCapture", "wakeClipMinScore"],
   "microphones": ["adcMicpga", "adcDigitalGain", "micGainDb", "beamformingEnabled", "beamAngle", "aecEnabled", "aecDelayMs", "aecTailMs", "aecRefSource", "nsAsr", "saveUtterances"],
   "ring": ["ledScene", "ledListenColor", "ledThinkColor", "meterAttack", "meterDecay", "meterFloor", "meterGamma", "meterRef", "meterCurve"],
   "advanced": ["agcEnabled", "vadThreshold", "vadSpeechMs", "vadSilenceMs", "buttonSingleTapEvent", "buttonMultiTapMs", "consolePassword", "consoleTimeoutMin", "controllerEndpoints"],
@@ -9040,7 +9245,7 @@ function ScopeToggle({ local, onChange, disabled }) {
   );
 }
 
-function Stage({ n, title, chips, desc, children, scope, dim }) {
+function Stage({ n, title, chips, desc, children, scope, dim, after }) {
   return (
     <Panel>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 6, flexWrap: 'wrap' }}>
@@ -9054,6 +9259,9 @@ function Stage({ n, title, chips, desc, children, scope, dim }) {
       {/* dim: a section following the fleet is shown read-only rather than
           hidden, so you can still see what it is inheriting. */}
       <div style={dim}>{children}</div>
+      {/* after: per-device actions that are not config, so a fleet scope
+          that makes the section read-only must not lock them out. */}
+      {after}
     </Panel>
   );
 }
@@ -9117,7 +9325,8 @@ function DeviceConfigForm({ config, onChange, disabled, sections, onScopeChange,
                             localCapable = true, listen = null,
                             hwEchoRef = false, hwRefCapable = true,
                             emosFleet = true, wakeCueCapable = true,
-                            sendspinCapable = true, sendspinPanel = null }) {
+                            volumeCueCapable = true, sendspinCapable = true,
+                            sendspinPanel = null }) {
   // emosFleet defaults TRUE for the same reason the capability props above do,
   // and for one more: it gates the console password, which is emOS-only, and
   // disabling a setting because we do not KNOW the fleet has an emOS device
@@ -9384,6 +9593,15 @@ function DeviceConfigForm({ config, onChange, disabled, sections, onScopeChange,
               Change it from Home Assistant or the device buttons; the current
               level is shown on the Status tab.
             </div>
+            <div style={{ marginTop: 8, ...inputStyle }}>
+              <Toggle label="Volume button sound"
+                sub={volumeCueCapable
+                  ? 'plays a short, low beep with a quick decay when idle; repeats at maximum'
+                  : 'needs newer firmware on this Echo'}
+                disabled={!volumeCueCapable}
+                value={config.volumeButtonSound ?? true}
+                onChange={v => set('volumeButtonSound', v)}/>
+            </div>
           </div>
         </div>
         <StageAdvanced open={advPlay} onToggle={() => setAdvPlay(o => !o)} disabledStyle={inputStyle}>
@@ -9479,6 +9697,15 @@ function DeviceConfigForm({ config, onChange, disabled, sections, onScopeChange,
                 <span style={{ fontFamily: mono, fontSize: 9, color: 'var(--muted)' }}>Eager</span>
               </div>
               <Slider label="Arbitration window" sub="ms that the first Echo to hear you silences the others — no added delay; 0 disables" value={config.wakeArbitrationMs ?? 700} min={0} max={2000} step={50} unit="ms" onChange={v => set('wakeArbitrationMs', v)}/>
+              <Toggle label="Save wake-word samples"
+                sub={onDeviceMode(config) === 'off'
+                  ? 'saves clips for review in Activity'
+                  : "only works with wake word detection On the controller"}
+                disabled={onDeviceMode(config) !== 'off'}
+                value={config.wakeClipCapture ?? false} onChange={v => set('wakeClipCapture', v)}/>
+              <Slider label="Minimum sample score" sub="lower catches more near-misses, but more ordinary speech too"
+                disabled={onDeviceMode(config) !== 'off'}
+                value={config.wakeClipMinScore ?? 0.20} min={0.05} max={0.95} step={0.01} formatValue={v => v.toFixed(2)} onChange={v => set('wakeClipMinScore', v)}/>
               {/* Accessibility first: the ring is the only other sign the Echo
                   is listening. Disabled with the reason on firmware that cannot
                   play it, never a switch that saves and stays silent. */}
@@ -9775,7 +10002,8 @@ function DeviceConfigForm({ config, onChange, disabled, sections, onScopeChange,
       <Stage n="07" title="Sendspin"
         chips={<ScopeChip tone="device">Device</ScopeChip>}
         desc="Makes the Echo a Sendspin player, so Music Assistant can group it with other speakers and play to all of them in sync. Music Assistant connects to the Echo directly. Music from Home Assistant still takes priority and leaves the group. Early Access."
-        scope={scopeEl('sendspin')} dim={secStyle('sendspin')}>
+        scope={scopeEl('sendspin')} dim={secStyle('sendspin')}
+        after={(config.sendspinEnabled ?? false) ? sendspinPanel : null}>
         <div className="em-grid2" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 24px', ...inputStyle }}>
           <Toggle label="Sendspin player"
             sub={sendspinCapable ? 'Music Assistant finds it on the network' : 'needs newer firmware on this Echo'}
@@ -9788,7 +10016,6 @@ function DeviceConfigForm({ config, onChange, disabled, sections, onScopeChange,
             value={config.sendspinUnpaired ?? false}
             onChange={v => set('sendspinUnpaired', v)}/>
         </div>
-        {(config.sendspinEnabled ?? false) && sendspinPanel}
       </Stage>
     </div>
   );

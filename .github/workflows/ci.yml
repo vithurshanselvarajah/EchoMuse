@@ -30,6 +30,12 @@ jobs:
         # pulling openwakeword or aiohttp in here, which is what the
         # minimal-test-env rule is actually about.
         run: pip install pytest numpy scipy pyyaml
+      # test_emos_update_flow.py runs the emOS update's device commands in a
+      # real shell, with busybox as the device has it. Without one the test
+      # would skip, so it fails under CI instead — a skipped check of what is
+      # written to a boot partition is not a pass.
+      - name: busybox, for the emOS update's device commands
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq busybox
       - name: Run pytest
         working-directory: controller
         run: python -m pytest tests/ -v
@@ -593,6 +599,14 @@ jobs:
           /tmp/cmdlinecheck
           cc -O2 -o /tmp/serialcheck emos/init/serialcheck.c
           /tmp/serialcheck
+      # The trial mark is written by the controller and read by init, and it
+      # decides whether an image updated over the network is rolled back. Read
+      # as absent, a broken image is promoted; a leftover read as live rolls a
+      # healthy one back. Neither says why on the device.
+      - name: An updated image is on trial exactly when the controller says so
+        run: |
+          cc -O2 -o /tmp/trialcheck emos/init/trialcheck.c
+          /tmp/trialcheck
       # em-wifi decides from wpa_supplicant's scan flags which networks it
       # offers. Tested SAE before PSK, it refused every WPA2/WPA3 transition-
       # mode network as WPA3 -- the default on current routers -- and sent

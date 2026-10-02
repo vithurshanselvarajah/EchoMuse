@@ -1061,6 +1061,7 @@ single written ladder. `docs/audio-states.md` §2 is the nearest thing.
 |------|------|
 | `em_controller.py` | WebSocket server, `Device` registry, voice pipeline, mDNS |
 | `em_api.py` | aiohttp HTTP API + dashboard SPA, OTA, shell proxy |
+| `em_emos_update.py` | Updating emOS in place: the checks, the device commands and the sequence, against an `io` the tests can stand in for. Pure |
 | `em_db.py` | SQLite persistence (devices, config, logs, users) |
 | `em_auth.py` | Session auth with bcrypt |
 | `em_eq.py` | Parametric EQ applied to TTS and music before playback; also hosts the chain, calling the guard and limiter in order |
@@ -1231,7 +1232,9 @@ listening, and calibrates network readings against them; see JOURNAL
 does not lose data, so a stall delivers late, never never, and cannot punch
 holes in a saved utterance. That mistake was made and corrected on the day.
 
-**Utterance recordings (schema v12).** Opt-in per device via `saveUtterances` (Config → Microphones): the mic audio streamed to HA for a turn is kept as a 16kHz mono WAV in `recordings/` beside the DB, playable and downloadable from each turn's row in the Activity tab (`GET /api/devices/{id}/turns/{turn}/audio`). Lets you hear what STT heard instead of inferring it from a bad transcript. Buffered in `_stream_mic_audio` **below the denoiser**, so the file is byte-for-byte the ESPHome wire payload — it first shipped tapped pre-NS, which answered "how good is the mic" but could not answer "why was the transcript wrong" on any device with `nsAsr` on, and that is the question people actually ask. **Keep the tap below NS**; if a raw comparison is ever wanted it belongs as a *second* file, not by moving this one. Capped at `MAX_UTTERANCE_BYTES` (30s), written in `_persist_turn` because the filename is keyed on the turn's rowid. Retention is a hard per-device **file count** (`em_recordings.KEEP_PER_DEVICE`=10) — much shorter than `TURN_RETENTION`, so **a non-NULL `audio_file` on an older row is a claim to check, not to trust**; every reader goes through `em_recordings.resolve`, which also re-checks that the file belongs to the device in the URL (the endpoint takes both from the path) and treats a missing file as an ordinary 404. Default OFF and it should stay that way: this is the only feature that writes recognisable speech to disk. `db.delete_device` unlinks a device's recordings explicitly — nothing cascades to the filesystem. Note the dashboard fetches the WAV via `API.blob` rather than an `<a href>`: sessions are Bearer-header-only, no cookie is ever set, so browser-initiated requests would 401.
+**Utterance recordings (schema v12).** Opt-in per device via `saveUtterances` (Config → Microphones): the mic audio streamed to HA for a turn is kept as a 16kHz mono WAV in `recordings/` beside the DB, playable and downloadable from each turn's row in the Activity tab (`GET /api/devices/{id}/turns/{turn}/audio`). Lets you hear what STT heard instead of inferring it from a bad transcript. Buffered in `_stream_mic_audio` **below the denoiser**, so the file is byte-for-byte the ESPHome wire payload — it first shipped tapped pre-NS, which answered "how good is the mic" but could not answer "why was the transcript wrong" on any device with `nsAsr` on, and that is the question people actually ask. **Keep the tap below NS**; if a raw comparison is ever wanted it belongs as a *second* file, not by moving this one. Capped at `MAX_UTTERANCE_BYTES` (30s), written in `_persist_turn` because the filename is keyed on the turn's rowid. Retention is a hard per-device **file count** (`em_recordings.KEEP_PER_DEVICE`=10) — much shorter than `TURN_RETENTION`, so **a non-NULL `audio_file` on an older row is a claim to check, not to trust**; every reader goes through `em_recordings.resolve`, which also re-checks that the file belongs to the device in the URL (the endpoint takes both from the path) and treats a missing file as an ordinary 404. Default OFF and it should stay that way: this setting writes recognisable speech to disk. `db.delete_device` unlinks a device's recordings explicitly — nothing cascades to the filesystem. Note the dashboard fetches the WAV via `API.blob` rather than an `<a href>`: sessions are Bearer-header-only, no cookie is ever set, so browser-initiated requests would 401.
+
+**Wake-word sample capture (schema v29).** Separate opt-in via `wakeClipCapture` and `wakeClipMinScore` in Config → Wake word. `handle_data` keeps a 1.5s in-memory pre-roll only while enabled; `wake_word_listener` starts a clip on the first trusted controller score above the floor, and the control path also starts one for on-device crossings, **but only while that Echo is streaming** (`listen_view.streams`). Private-session `0x07` audio never feeds the pre-roll, and the pre-roll resets on session close and on any `owwOnDevice` change: the ring has no timestamps, so fed only by sessions it holds the PREVIOUS session's tail, and the first version saved exactly that as wake audio (reproduced in the #696 review: 42,240 bytes, all stale, none from the wake). A candidate collects 1.25s post-roll; a trigger collects none and instead has a fixed 0.2s trimmed off the end, since its own timestamp is precise enough not to need any added — both capped at 5s total. `em_wake_samples` then writes a WAV and `wake_samples` stores its review metadata. A real trigger is always retained even below the floor; rising-edge gating prevents one sustained score from opening repeated clips. Admin-only Activity routes play, label, download and delete clips. Keep 50 per device; disabling capture clears the in-memory buffer, device deletion removes the files, and the controller never writes audio continuously. This dataset is operator-labelled only — it does not feed training automatically. Both wake samples and `saveUtterances` contain speech, so keep both opt-in and the sample APIs admin-only.
 
 ## The emOS console password
 
@@ -1603,6 +1606,107 @@ Device-side payloads the controller distributes (`start_server.sh` via `/api/pro
 **Every payload needs an update path, and `tests/test_deploy.py` enforces it** (a file in `device_payloads/` unreferenced by `em_api.py` fails CI). The debloat pair had none until 2026-07-30 and every fielded device needed a manual push. `_sync_debloat` also rides the OTA and reconciles **both** halves — the boot script by md5, and the `pm hide` list by asking the device which listed packages are still visible — because round 2 added a *package* and a script-only sync would have looked like it worked while changing nothing. It is additionally exposed as `POST /api/devices/{id}/debloat` (Updates tab → Maintenance), which is **required, not a convenience**: the OTA path cannot reach a device already on the latest firmware. Two traps in that reconcile, both of which produced confident wrong answers: match package names with `grep -qx` (whole line) — an unanchored `*package:$p*` also matches `package:$p.client` — and never treat `pm list packages -u` minus `pm list packages` as the hidden count, since it includes uninstalled packages.
 
 `com.amazon.whad` is `PERSISTENT`: `pm disable` is ignored, **`am force-stop` is a no-op**, and `pm hide` does not stop a running instance — it stays until the next reboot, which is why the log line says so. Note RSS overstates the win ~6x (shared zygote pages): the measured recovery is ~20-35MB per device by `memUsedMb`, not the 62MB RSS suggests.
+
+## emOS update (`em_emos_update.py`, #573)
+
+**An emOS device is updated over the network by REBUILDING its own image**,
+because the image cannot be shipped: it carries the device's kernel and DTBs.
+The controller reads the running image off `mmcblk0p10` over the shell plane,
+keeps its kernel, load addresses and cmdline byte for byte, swaps the ramdisk
+for one built from the release's init, and writes it back. Offered per device
+on the Updates tab (`emosUpdateAvailable`, decided server-side), queued behind
+`_ota_lock` like firmware, `POST /api/devices/{id}/emos_update`.
+
+**amonet 1 and 2 take the same path**, and that is the point of rebuilding from
+the running image rather than from stock: the kernel architecture and the
+`emos.system=` stamp (or its absence on v1) are already inside it and are
+carried across untouched. Nothing asks which amonet a device has.
+
+`em_emos_update.run_update(io)` is the whole sequence, written against a small
+`io` so it runs in `tests/test_emos_update_flow.py` against a simulated device
+whose commands are executed by a REAL shell with busybox. `em_api._EmosIO` is
+the real carrier and decides nothing. That test found two things no reading
+would have: `dd` without `conv=notrunc`, and that not every busybox has
+`base64` (Ubuntu's does not), which is why preflight probes each tool by
+running it.
+
+The gates, in order, and what each is for:
+
+- **Preflight refuses an unconfirmed boot** (`boot.state` not 0): init is still
+  deciding about the running image, and replacing it would hide the answer.
+- **The image read must BE the running image** (`reference_problems`): its
+  ramdisk's os-release must match what the device reports, and its stored id
+  must match its contents. On OUR images a wrong id is damage, unlike a stock
+  reference, where f1r30s leaves a stale one.
+- **`boot-good.img` must equal the running image by md5 before anything is
+  written**, and is refreshed if not. Otherwise a rollback lands on whatever
+  was confirmed last, which may be two versions back.
+- **The init must contain the trial mark's path** (`init_supports_trial`).
+  Asked of the binary, not of the version, so a local build is judged the same
+  way as a release. `MIN_TARGET` (0.10) is only for OFFERING, where there is no
+  binary to ask.
+- **`built_problems`**: the kernel and cmdline are identical to what was read,
+  the id is new (init promotes `boot-good.img` on an id change — #573's first
+  question), and the image fits the partition.
+- **The write is read back after `drop_caches`.** A reply that never arrived
+  (the link dropped mid-`dd`) is settled by asking the flash again, not assumed
+  either way. A write that does not verify is undone from `boot-good.img` on
+  the spot, while the old init is still the one running.
+
+**The trial mark is what makes it safe unattended** (`/data/emos/update.pending`,
+init from 0.10, `emos/init/trialcheck.c`). init's own rollback counts boots and
+confirms at network-up, which leaves two holes when nobody is at the device: an
+image with broken WiFi never reboots to be counted, and an image that gets an
+address but cannot run the firmware is promoted. So the controller writes the
+new image's id to the mark before flashing and removes it once the device has
+re-registered on that build; until then init does not confirm, reboots at 180s,
+and restores the old image after three tries (~10 min, hence `WATCH_S`). **A
+controller that is down through that window costs a good update its place** —
+it is rolled back and has to be retried. That was chosen over promoting an
+image nobody could reach (Wil, 2026-10-02).
+
+**Confirmation is stateless on purpose.** `_emos_status_on_connect` runs for
+every emOS connect, not debounced: the mark carries the build it was written
+for, so a controller that restarted mid-update still confirms. It also stores
+`emos_version`/`emos_build` (schema v30) — read over the shell plane rather
+than added to the register message, because the mark needs that round trip
+anyway and it works on every fielded firmware.
+
+**init says when it rolled back** (`/data/emos/rollback.last`, from 0.10:
+failed id, restored id, tries). It removes the mark as it restores, so before
+this the returning controller could only infer a rollback from the image an
+update had left on `/data` — C95's forced rollback, 2026-10-02, came back
+with nothing reported and 7MB left behind. `settle_on_connect` reads the
+record, reports it and removes it; with no record (an init older than 0.10) a
+pushed image and no mark is still reported, as "did not complete".
+
+**A redial is told from a restart by kernel uptime.** The old build on a new
+connection is a rollback only if the kernel has NOT been up since before the
+restart was asked for; otherwise it never restarted, and the mark is left so
+the trial still applies when it does.
+
+**Run on hardware 2026-10-02**, C95 (amonet 1, 64-bit) and 15LE (amonet 2,
+32-bit): 0.9 to a test build on both, partition md5 equal to the image sent
+and to the promoted `boot-good.img`, confirmed 10s after network-up. Forced
+failure on C95 with the controller stopped: three trial boots of ~185s, amber,
+the previous image back byte-identical, 11 minutes in all. FireOS 5's own
+busybox takes `dd conv=notrunc,fsync`.
+
+**What it cannot recover** is an image that fails before init runs, which
+needs TWRP and a cable. A power cut during the ~1s write lands there. The
+identical-kernel check and the read-back exist to make that the only way in.
+
+**`emos-v0.10` was tagged the same night** and is the first release the panel
+offers. The rollback RECORD was added after that hardware run and went out
+without one (Wil, 2026-10-02); the rollback itself was run. Exercise it with
+`echo 3 > /data/emos/boot.state` and a restart on a 0.10 device: init rewrites
+its own image and the controller should log the "rewrote its known-good
+image" line.
+
+Not built yet: a manual roll-back button, emOS in the fleet "update all", and
+checking the release's attestation before use (firmware does not either).
+`POST /api/emos/upload` takes a locally built `emos-payload.zip`, as Local
+Build does for firmware.
 
 ## Provisioning wizard (`dashboard.jsx`, `_WIZARD_STEPS`)
 

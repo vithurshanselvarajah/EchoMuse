@@ -150,6 +150,7 @@ func sendspinPoll(spk *speaker.PcmSpeaker) {
 		if c.Active() && time.Since(sendspinLoggedAt) >= time.Minute {
 			sendspinLoggedAt = time.Now()
 			logSendspinStats(c.Status())
+			logSendspinSync(c)
 		}
 	}
 }
@@ -165,6 +166,21 @@ func logSendspinStats(st sendspin.Status) {
 	p := st.Player
 	log.Printf("[sendspin] playing: synced=%v syncErr=%dus buffered=%dms snaps=%d corrections=%d underruns=%d lateDrops=%d lastErr=%dus",
 		st.Synced, st.SyncErrUs, st.BufferedMs, p.Snaps, p.Corrections, p.Underruns, p.LateDrops, p.LastErrorUs)
+}
+
+// logSendspinSync puts the minute's time exchanges beside the counts above:
+// a correction burst that lines up with a wide delay or measurement spread is
+// the filter chasing jittery sync replies (#707).
+func logSendspinSync(c *sendspin.Client) {
+	d, ok := c.SyncDiag()
+	if !ok {
+		return
+	}
+	log.Printf("[sendspin] sync: n=%d delay=%d..%dus meas=%d..%dus offset=%dus drift=%.2fppm",
+		d.N, d.DelayMinUs, d.DelayMaxUs, d.MeasMinUs, d.MeasMaxUs, d.OffsetUs, d.DriftPpm)
+	o := c.OutDiag()
+	log.Printf("[sendspin] dac: n=%d resid=%d..%dus big=%d nudgeMax=%dus gated=%d coasted=%d resets=%d rate=%.1fppm",
+		o.N, o.ResidMinUs, o.ResidMaxUs, o.BigResid, o.NudgeMaxUs, o.Gated, o.Coasted, o.Resets, o.RatePpm)
 }
 
 // sendspinMusic is the player's share of what the BLE duty cycle weighs:

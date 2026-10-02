@@ -14,10 +14,10 @@ func TestVolumeGainIsTheCodecLaw(t *testing.T) {
 		want  float64
 	}{
 		{127, 1.0},
-		{87, 0.1},   // -20dB
-		{47, 0.01},  // -40dB, the button floor
-		{175, 1.0},  // never above unity: the DAC saturated there
-		{0, 0},      // HA's 0.0 is silence
+		{87, 0.1},  // -20dB
+		{47, 0.01}, // -40dB, the button floor
+		{175, 1.0}, // never above unity: the DAC saturated there
+		{0, 0},     // HA's 0.0 is silence
 		{-3, 0},
 	} {
 		if got := VolumeGain(tc.level); math.Abs(got-tc.want) > tc.want*0.001+1e-12 {

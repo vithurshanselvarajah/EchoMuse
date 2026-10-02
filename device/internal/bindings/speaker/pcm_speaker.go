@@ -23,7 +23,7 @@ import (
 
 // cardNr/deviceNr live in pcmstatus.go so the host test can pin them against
 // the status path — this file is ARM-only (build tag `server`).
-const periodSize  = 2048
+const periodSize = 2048
 
 // The hardware tier: what ALSA holds ahead of the DAC. It is sized ONLY for
 // this loop's scheduling lateness — WiFi is the deep queue's job — and every
@@ -151,16 +151,19 @@ type PcmSpeaker struct {
 	src       atomic.Pointer[sourceBox]
 	srcBuf    []byte
 	srcLastNs atomic.Int64 // last period the source played
+	dacStep   dacStepLog   // pullSource's alone
 }
 
 // MusicSource is a pull producer for the music plane. Fill writes one stereo
 // S16LE period whose first frame reaches the DAC at playAt (as measured;
-// the source smooths it), reporting false when it has nothing due. Active
-// says whether it has anything queued at all, so an idle source costs no
-// status read.
+// the source smooths it), reporting false when it has nothing due. uncertain
+// is how far playAt may be off from the measurement itself — half the time
+// the status read took — so a source can decline to learn from a reading
+// the scheduler interrupted. Active says whether it has anything queued at
+// all, so an idle source costs no status read.
 type MusicSource interface {
 	Active() bool
-	Fill(out []byte, playAt time.Time) bool
+	Fill(out []byte, playAt time.Time, uncertain time.Duration) bool
 }
 
 type sourceBox struct{ s MusicSource }
@@ -178,21 +181,31 @@ func (p *PcmSpeaker) SetMusicSource(s MusicSource) {
 // pullSource asks the source for this period. The DAC time is measured
 // here: the frames ALSA holds ahead of the DAC, read the instant before the
 // period is built, since every one of them plays before its first frame.
+//
+// The clock is read on BOTH sides of the status read and the midpoint used,
+// as NTP brackets an exchange. Reading it only after, as this did, made any
+// pause between the two (scheduler, GC) a late measurement: +4–10ms
+// readings every minute on C95, 2026-10-01 (#707). The bracket's width says
+// how much to trust the reading, and the source is told.
 func (p *PcmSpeaker) pullSource() []byte {
 	box := p.src.Load()
 	if box == nil || !box.s.Active() {
 		return nil
 	}
+	before := time.Now()
 	b, err := os.ReadFile(statusPath(cardNr, deviceNr))
-	now := time.Now()
+	read := time.Since(before)
 	if err != nil {
 		return nil
 	}
+	now := before.Add(read / 2)
 	d, ok := pcmDelay(string(b))
 	if !ok {
 		return nil
 	}
-	if !box.s.Fill(p.srcBuf, now.Add(time.Duration(d)*time.Second/48000)) {
+	playAt := now.Add(time.Duration(d) * time.Second / 48000)
+	p.dacStep.note(playAt, read, string(b), time.Duration(len(p.srcBuf)/4)*time.Second/48000)
+	if !box.s.Fill(p.srcBuf, playAt, read/2) {
 		return nil
 	}
 	p.srcLastNs.Store(now.UnixNano())
@@ -309,9 +322,9 @@ func (p *PcmSpeaker) Init() (err error) {
 		return nil
 	}
 
-	time.Sleep(100 * time.Millisecond)     // silence reaches the DAC (~2 periods)
-	mixer.Set(mixer.SpeakerAmp, "On")      // enable amp onto a clocked, silent DAC
-	time.Sleep(50 * time.Millisecond)      // let amp settle
+	time.Sleep(100 * time.Millisecond)        // silence reaches the DAC (~2 periods)
+	mixer.Set(mixer.SpeakerAmp, "On")         // enable amp onto a clocked, silent DAC
+	time.Sleep(50 * time.Millisecond)         // let amp settle
 	mixer.Set(mixer.PlaybackVolume, dacUnity) // unmute: volume is applied in software
 
 	log.Println("PcmSpeaker initialised — silence stream running")
@@ -724,15 +737,15 @@ func (p *PcmSpeaker) EndStream() { p.voice.endStream() }
 func (p *PcmSpeaker) EndMusicStream() { p.music.endStream() }
 
 // Flush cuts a playing VOICE stream immediately (barge-in). Two parts:
-//   1. Drain the buffer — kills up to ~5.5s already queued on-device.
-//   2. Arm discarding (if a stream is mid-flight) — subsequent periods of
-//      this stream are dropped until its EOS arrives. Necessary because the
-//      controller writes the whole response into the WebSocket ahead of
-//      playback: at barge time the rest of the stream is already in TCP
-//      buffers and would refill the channel right after the drain (the
-//      pre-2026-07-08 version drained only, and playback resumed after a
-//      ~1.3s skip). The controller sends the EOS on the cancel path too, so
-//      the discard always terminates.
+//  1. Drain the buffer — kills up to ~5.5s already queued on-device.
+//  2. Arm discarding (if a stream is mid-flight) — subsequent periods of
+//     this stream are dropped until its EOS arrives. Necessary because the
+//     controller writes the whole response into the WebSocket ahead of
+//     playback: at barge time the rest of the stream is already in TCP
+//     buffers and would refill the channel right after the drain (the
+//     pre-2026-07-08 version drained only, and playback resumed after a
+//     ~1.3s skip). The controller sends the EOS on the cancel path too, so
+//     the discard always terminates.
 //
 // Up to alsaBufferFrames (~85ms) already handed to the hardware
 // still play — cutting those needs a stream restart, which costs more in

@@ -26,6 +26,19 @@ type timeFilter struct {
 	processVar, driftProcessVar, forgetVarFactor float64
 
 	cur timeElement
+
+	diag SyncDiag
+}
+
+// SyncDiag summarises the time exchanges since it was last taken, for the
+// device log: whether correction bursts line up with jittery sync replies
+// (#707). Delay is the one-way estimate the filter is fed as maxError.
+type SyncDiag struct {
+	N                      int
+	DelayMinUs, DelayMaxUs int64
+	MeasMinUs, MeasMaxUs   int64 // raw offset measurements
+	OffsetUs               int64 // the filter's estimate when taken
+	DriftPpm               float64
 }
 
 type timeElement struct {
@@ -74,6 +87,7 @@ func (f *timeFilter) update(measurement, maxError, timeAdded int64) {
 	if timeAdded <= f.lastUpdate {
 		return
 	}
+	f.noteDiagLocked(measurement, maxError)
 	dt := float64(timeAdded - f.lastUpdate)
 	f.lastUpdate = timeAdded
 
@@ -185,4 +199,28 @@ func (f *timeFilter) syncIntervalMs() int {
 		return 500
 	}
 	return 200
+}
+
+func (f *timeFilter) noteDiagLocked(measurement, maxError int64) {
+	d := &f.diag
+	if d.N == 0 {
+		d.DelayMinUs, d.DelayMaxUs = maxError, maxError
+		d.MeasMinUs, d.MeasMaxUs = measurement, measurement
+	}
+	d.N++
+	d.DelayMinUs, d.DelayMaxUs = min(d.DelayMinUs, maxError), max(d.DelayMaxUs, maxError)
+	d.MeasMinUs, d.MeasMaxUs = min(d.MeasMinUs, measurement), max(d.MeasMaxUs, measurement)
+}
+
+// takeDiag returns the exchanges since the last call and starts a new window.
+func (f *timeFilter) takeDiag() SyncDiag {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	d := f.diag
+	f.diag = SyncDiag{}
+	d.OffsetUs = pyRound(f.cur.offset)
+	if f.cur.useDrift {
+		d.DriftPpm = f.cur.drift * 1e6
+	}
+	return d
 }

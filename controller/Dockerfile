@@ -100,6 +100,7 @@ COPY em_output_mute.py .
 COPY em_scenes.py .
 COPY em_support.py .
 COPY em_shadow.py .
+COPY em_wake_samples.py .
 COPY em_barge.py .
 COPY em_earlytts.py .
 COPY em_ns.py .
@@ -139,6 +140,7 @@ COPY em_console_pw.py .
 COPY em_labels.py .
 COPY em_crashlog.py .
 COPY em_emos_build.py .
+COPY em_emos_update.py .
 COPY em_recordings.py .
 COPY em_turnclock.py .
 COPY em_firmware.py .

@@ -95,6 +95,7 @@ import em_mbc
 import em_scenes
 import em_shadow
 import em_health
+import em_wake_samples
 import em_oww_warmup
 import em_barge
 import em_arbiter
@@ -519,6 +520,11 @@ class Device:
         # switching it off stops the next turn being captured, not the one
         # already streaming.
         self.save_utterances: bool = False
+        # Wake-word training clips use the already-streamed wake audio. The
+        # default is off because these clips may contain private speech.
+        self.wake_clip_capture: bool = False
+        self.wake_clip_min_score: float = 0.20
+        self.wake_capture: em_wake_samples.WakeCapture = em_wake_samples.WakeCapture()
         # streamReply: play a reply from HA's early streaming signal rather than
         # TTS_END (em_earlytts). Read per turn by em_esphome. Config key:
         # streamReply. Off by default.
@@ -1025,6 +1031,11 @@ class Device:
         fails the person this accessibility setting exists for.
         """
         return "wake_cue" in (self.capabilities or [])
+
+    @property
+    def volume_cue_capable(self) -> bool:
+        """Whether physical volume changes can play an idle preview tone."""
+        return "volume_cue" in (self.capabilities or [])
 
     @property
     def oww_trigger_capable(self) -> bool:
@@ -3559,6 +3570,15 @@ async def _stream_listen(device: Device):
                 source = em_shadow.decide_wake_source(
                     device.oww_on_device, dev_wake, ctrl_hit
                 )
+                if trusted or source != "none":
+                    device.wake_capture.consider(
+                        enabled=device.wake_clip_capture,
+                        minimum=device.wake_clip_min_score,
+                        score=float(score), threshold=float(eff_threshold),
+                        model=current_model_name,
+                        device_score=(dev_wake["score"] if dev_wake is not None else None),
+                        trigger_source=(source if source != "none" else None),
+                    )
                 if ctrl_hit and device.oww_on_device == em_shadow.MODE_ON:
                     # "on" mode, and this controller heard it too. Recorded for
                     # the comparison and nothing else — the device is driving.
@@ -4276,6 +4296,8 @@ async def handle_control(ws: WebSocketServerProtocol, secure: bool = False):
         device.oww_speex_ns  = bool(config.get("owwSpeexNs", False))
         device.ns_asr        = bool(config.get("nsAsr", False))
         device.save_utterances = bool(config.get("saveUtterances", False))
+        device.wake_clip_capture = bool(config.get("wakeClipCapture", False))
+        device.wake_clip_min_score = float(config.get("wakeClipMinScore", 0.20))
         device.stream_reply = bool(config.get("streamReply", False))
         device.barge_in_enabled = bool(config.get("bargeInEnabled", False))
         device.barge_threshold  = float(config.get("bargeInThreshold", 0.6))
@@ -4290,9 +4312,14 @@ async def handle_control(ws: WebSocketServerProtocol, secure: bool = False):
         # Resolved against the capability — see em_shadow.effective_mode for
         # why "on" against firmware that cannot trigger must become shadow
         # rather than being honoured.
-        device.oww_on_device = em_shadow.effective_mode(
+        new_oww_on_device = em_shadow.effective_mode(
             config.get("owwOnDevice"), device.oww_trigger_capable,
         )
+        if new_oww_on_device != device.oww_on_device:
+            # #696 review: a buffered pre-roll from the old mode must not
+            # carry into the new one.
+            device.wake_capture.reset()
+        device.oww_on_device = new_oww_on_device
         # Wake word assets, start script and debloat, reconciled against what
         # the device actually has — see api.reconcile_on_connect for why the
         # arrival is the trigger. Background: shell round trips and possibly a
@@ -4839,6 +4866,9 @@ async def handle_control(ws: WebSocketServerProtocol, secure: bool = False):
                         # for comparison ONLY — nothing here starts a turn, and
                         # that is the entire point of shadow mode.
                         device.shadow.record_cross(msg.get("score"), msg.get("ageMs"))
+                        _consider_on_device_wake_sample(
+                            device, msg, device.shadow.threshold
+                        )
                         log.info(
                             f"[{device_id}] on-device wake crossing: "
                             f"score={msg.get('score')} age={msg.get('ageMs')}ms "
@@ -4860,11 +4890,17 @@ async def handle_control(ws: WebSocketServerProtocol, secure: bool = False):
                         # controller-triggered one and the Activity tab does not
                         # have to special-case which side fired.
                         device.shadow.record_cross(msg.get("score"), msg.get("ageMs"))
+                        if device.listen_view.streams:
+                            # Only when this Echo's mic is actually reaching us
+                            # continuously (#696 review) — a private session's
+                            # own pre-roll is never fed (see the data-plane 0x07
+                            # branch), so capturing it here would grab whatever
+                            # stale audio is left from a PRIOR session instead.
+                            _consider_on_device_wake_sample(
+                                device, msg, msg.get("threshold")
+                            )
                         if msg.get("session"):
-                            # Private listening: the wake opened a session,
-                            # whose audio is already arriving as 0x07 frames.
-                            # Queued for _private_listen, which owns turn
-                            # setup exactly as the stream path does.
+                            # Private listening: the wake opened a session.
                             ev = em_listen.parse_wake(msg, asyncio.get_event_loop().time())
                             if ev is None:
                                 log.warning(f"[{device_id}] malformed oww_wake dropped: {msg!r}")
@@ -4942,6 +4978,9 @@ async def handle_control(ws: WebSocketServerProtocol, secure: bool = False):
                             device.listen_router.close(sess)
                             if device.listen_session == sess:
                                 device.listen_session = None
+                            # #696 review: nothing of this session belongs in a
+                            # later clip.
+                            device.wake_capture.reset()
                             log.info(f"[{device_id}] session {sess} closed on the device "
                                      f"({msg.get('reason')})")
 
@@ -5115,6 +5154,43 @@ def _note_wear(device, emmc) -> None:
     em_dbwriter.submit(db.record_wear, device.device_id, day, values)
 
 
+# ─── Wake-word sample capture ─────────────────────────────────────────────────
+
+def _consider_on_device_wake_sample(device, msg: dict, threshold) -> None:
+    """Record either kind of on-device crossing through the same capture path."""
+    try:
+        device.wake_capture.consider(
+            enabled=device.wake_clip_capture,
+            minimum=device.wake_clip_min_score,
+            score=None,
+            threshold=float(threshold or device.oww_threshold),
+            model=device.oww_model,
+            device_score=float(msg.get("score") or 0.0),
+            trigger_source="device",
+        )
+    except (TypeError, ValueError):
+        pass
+
+
+def _store_wake_candidate(device_id: str, sample: dict) -> int | None:
+    """Write the bounded clip and its review metadata off the event loop."""
+    name = em_wake_samples.filename(device_id)
+    if name is None or not em_wake_samples.save(device_id, name, sample["pcm"]):
+        return None
+    record = {k: v for k, v in sample.items() if k != "pcm"}
+    record["audio_file"] = name
+    try:
+        return db.insert_wake_sample(device_id, record)
+    except Exception:
+        em_wake_samples.remove(device_id, [name])
+        raise
+
+
+async def _persist_wake_candidate(device, sample: dict) -> None:
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(None, _store_wake_candidate, device.device_id, sample)
+
+
 # ─── Data plane handler ───────────────────────────────────────────────────────
 
 async def handle_data(ws: WebSocketServerProtocol, secure: bool = False):
@@ -5206,6 +5282,10 @@ async def handle_data(ws: WebSocketServerProtocol, secure: bool = False):
                         continue
                     session, _seq, pcm = parsed
                     device.frames_seen_this_connection = True
+                    # Never fed to wake_capture: this is private-session audio,
+                    # already past the user's own wake word, and its pre-roll
+                    # would otherwise hold whatever a PRIOR session last said
+                    # (#696 review) — this frame type carries nothing else.
                     for chunk in device.listen_router.frame(
                             session, pcm, asyncio.get_event_loop().time()):
                         _put_voice_frame(device, chunk)
@@ -5233,8 +5313,16 @@ async def handle_data(ws: WebSocketServerProtocol, secure: bool = False):
                         log.error(f"[{device.device_id}] VAD sentinel lost — queue still full after drain")
                     continue
                 _now = asyncio.get_event_loop().time()
+                pcm = raw[MIC_HEADER_LEN:]
+                # Keep bounded pre-roll only while capture is enabled. The
+                # capture object owns the ring and post-roll limits.
+                if device.wake_clip_capture or device.wake_capture.active is not None:
+                    completed = device.wake_capture.feed_audio(pcm)
+                    if completed is not None:
+                        em_tasks.spawn(_persist_wake_candidate(device, completed)) \
+                            .add_done_callback(_log_task_exception)
                 payload = em_listen.Frame(
-                    raw[MIC_HEADER_LEN:], _now,
+                    pcm, _now,
                     # A VAD-gated turn stream skips frames, so its sequence
                     # does not count time; arrival is the best it offers.
                     _now if device.mic_gated else device.capture_clock.observe(

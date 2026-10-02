@@ -28,7 +28,8 @@ type Device struct {
 	VadSilenceMs int
 
 	// Speaker
-	StartupVolume int
+	StartupVolume     int
+	VolumeButtonSound bool
 
 	// Wake word
 	OwwThreshold float64
@@ -186,6 +187,7 @@ func (d *Device) loadDefaults() {
 	d.VadSpeechMs = envInt("VAD_SPEECH_MS", 80)
 	d.VadSilenceMs = envInt("VAD_SILENCE_MS", 600)
 	d.StartupVolume = envInt("STARTUP_VOLUME", 85)
+	d.VolumeButtonSound = envBool("VOLUME_BUTTON_SOUND", true)
 	d.OwwThreshold = envFloat("OWW_THRESHOLD", 0.5)
 	d.OwwModel = envStr("OWW_MODEL", "hey_jarvis_v0.1")
 	d.OwwOnDevice = normaliseOnDevice(envStr("OWW_ON_DEVICE", OnDeviceOff))
@@ -265,6 +267,9 @@ func (d *Device) Apply(msg ConfigMessage) {
 	if msg.WakeSoundLevel != "" {
 		d.WakeSoundLevel = msg.WakeSoundLevel
 	}
+	if msg.VolumeButtonSound != nil {
+		d.VolumeButtonSound = *msg.VolumeButtonSound
+	}
 	if msg.StartupVolume > 0 {
 		d.StartupVolume = msg.StartupVolume
 	}
@@ -321,6 +326,15 @@ func (d *Device) WakeSoundSetting() (on bool, level string) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 	return d.WakeSound, d.WakeSoundLevel
+}
+
+// VolumeButtonSoundEnabled reports whether physical volume changes should
+// play their audible preview. The caller still decides whether playback is
+// idle; config owns only the preference.
+func (d *Device) VolumeButtonSoundEnabled() bool {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return d.VolumeButtonSound
 }
 
 // applyOutput merges the output-chain keys. Every one of them has a
@@ -390,6 +404,7 @@ func (d *Device) Snapshot() ConfigMessage {
 	if d.BleProxyEnabled != nil {
 		bleProxyEnabled = *d.BleProxyEnabled
 	}
+	volumeButtonSound := d.VolumeButtonSound
 	sendspinEnabled := d.SendspinEnabled != nil && *d.SendspinEnabled
 	sendspinUnpaired := d.SendspinUnpaired != nil && *d.SendspinUnpaired
 	return ConfigMessage{
@@ -402,6 +417,7 @@ func (d *Device) Snapshot() ConfigMessage {
 		BargeInEnabled:     &bargeInEnabled,
 		BargeInThreshold:   d.BargeInThreshold,
 		StartupVolume:      d.StartupVolume,
+		VolumeButtonSound:  &volumeButtonSound,
 		AdcDigitalGain:     &adcDigitalGain,
 		AdcMicpga:          &adcMicpga,
 		MicGainDb:          &micGainDb,
@@ -482,6 +498,8 @@ type ConfigMessage struct {
 	// WakeSound: a pointer so "off" is distinguishable from absent.
 	WakeSound      *bool  `json:"wakeSound,omitempty"`
 	WakeSoundLevel string `json:"wakeSoundLevel,omitempty"`
+	// VolumeButtonSound: a pointer so "off" is distinguishable from absent.
+	VolumeButtonSound *bool `json:"volumeButtonSound,omitempty"`
 
 	// Output chain (internal/outchain). Pointers because zero is a real
 	// setting for every one of them; see applyOutput.

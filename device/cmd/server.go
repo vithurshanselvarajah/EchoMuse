@@ -38,8 +38,8 @@ import (
 	"github.com/wilbowes/EchoMuse/internal/wakeword"
 	"github.com/wilbowes/EchoMuse/internal/wakeword/shadow"
 	"github.com/wilbowes/EchoMuse/internal/wifi"
-	pkgbuttons "github.com/wilbowes/EchoMuse/pkg/buttons"
 	"github.com/wilbowes/EchoMuse/pkg/board"
+	pkgbuttons "github.com/wilbowes/EchoMuse/pkg/buttons"
 	"github.com/wilbowes/EchoMuse/pkg/led"
 )
 
@@ -145,10 +145,21 @@ func main() {
 			log.Println("[cmd] volume button ignored — no controller session")
 			return
 		}
+		changed := false
 		if direction == "up" {
-			s.VolumeStepUp()
+			changed = s.VolumeStepUp()
 		} else {
-			s.VolumeStepDown()
+			changed = s.VolumeStepDown()
+		}
+		// The cue is for the person pressing the physical button. Remote
+		// volume changes stay silent, and active voice/music already provides
+		// the audible reference this setting exists to supply while idle.
+		const playbackTail = 100 * time.Millisecond
+		if cue.VolumeButtonPreviewDue(direction, changed, s.VolumeAtMax()) &&
+			config.Get().VolumeButtonSoundEnabled() &&
+			!pcmSpeaker.VoiceAudible(playbackTail) &&
+			!pcmSpeaker.MusicAudible(playbackTail) {
+			playVolumeCue(pcmSpeaker, s.VolumeLevel())
 		}
 	})
 	buttonController.SetMuteCallback(func() {
@@ -159,7 +170,7 @@ func main() {
 
 	dataClient := client.NewDataClient(deviceID, microphone, pcmSpeaker, canceller)
 	canceller.SetStatePath(aec.DefaultStatePath) // saved echo path: loaded on the hardware reference
-	applyAecConfig(canceller, dataClient) // arm from env defaults before any config push
+	applyAecConfig(canceller, dataClient)        // arm from env defaults before any config push
 
 	// Direction callback — update LED ring to show estimated source angle
 	dataClient.OnDirectionChanged(func(angle float64) {
@@ -1326,6 +1337,16 @@ func playWakeCue(spk *speaker.PcmSpeaker) {
 		c = wakeCues[cue.LevelMedium]
 	}
 	spk.PlayCue(c)
+}
+
+// playVolumeCue previews the newly selected device volume. PlayCue is mixed
+// after software volume (so wake sounds can stay absolute), therefore these
+// samples carry the device-volume gain themselves.
+func playVolumeCue(spk *speaker.PcmSpeaker, level int) {
+	if spk == nil {
+		return
+	}
+	spk.PlayCue(cue.VolumeCue(speakerRate, speaker.VolumeGain(level)))
 }
 
 // speakerRate mirrors the speaker binding's rate, declared here so this file

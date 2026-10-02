@@ -56,7 +56,8 @@ the Status row reads `Online`, or `Offline` with how long ago the device was
 last heard from) and **Activity** (voice-turn history — what was heard, how it was
 transcribed, wake-word scores, playback underruns, near-misses, and — if
 **Save utterances** is on — the recorded audio of each turn, playable and
-downloadable). Activity
+downloadable). If **Save wake-word samples** is on, Activity also lists
+score candidates and detector hits for review and labeling. Activity
 history is stored in the controller's database, so it survives controller
 and device restarts; hourly hardware trends (CPU, memory, WiFi signal) are
 kept for 180 days and available via the API
@@ -214,6 +215,13 @@ The physical buttons step about 4dB per press across the audible range,
 rather than spending presses near the bottom of a scale where nothing is
 audible — silencing the device is the mute button's job. The cyan ring
 spans that same range, so a press always moves it.
+
+**Volume button sound** plays a short, low beep with a quick decay at the newly
+selected volume when you change it with the Dot's physical buttons while the
+speaker is idle. It stays silent for Home Assistant volume changes and while
+voice or music is already playing. Pressing Volume Up again at maximum replays
+the beep so the upper limit is audible. The switch follows the Playback
+section's Fleet / Device scope and is on by default.
 
 Mute is remembered too, but by the device itself: a muted Dot stays muted
 through reboots, power cuts, and firmware updates — red ring and all —
@@ -394,12 +402,39 @@ Where the wake word is heard. Set per Echo; two choices.
   This is how EchoMuse worked before private listening, and installs from
   before it keep this setting until you change it.
 
+### Wake-word sample capture
+For collecting examples to improve a custom wake model, enable **Save
+wake-word samples** under Config → Wake word. The controller keeps a short
+in-memory audio buffer and saves a clip when its score reaches **Minimum
+sample score**, plus every actual wake trigger. In **Both (compare)** mode it
+also saves crossings reported by the Echo. A clip includes audio before and
+after the score peak; it does not continuously write room audio to disk.
+
+Review clips in the device's Activity panel. Label each as **Wake word**,
+**Not wake word**, or **Unsure**. This makes a reviewable set of positive and
+negative examples; it does not train or change the model automatically.
+Labeling also copies the clip into a permanent, uncapped store on disk,
+organised by label, alongside its score and model as a small metadata
+file — so a clip worth keeping survives the 50-per-device limit below rather
+than eventually being pruned with everything else. Capture is off by default,
+and clips are admin-only because they may contain ordinary speech. A phrase
+that scores below the chosen minimum on both detectors will not be captured.
+
+Both the reviewable clips and the labeled archive are plain WAV files on
+disk, in `data/recordings/wake_samples/` and
+`data/recordings/wake_samples_archive/<label>/` respectively — never
+uploaded anywhere. The controller retains at most **50 clips per Echo** in
+the first folder, oldest pruned automatically; the second has no limit and
+nothing removes from it. Turning capture off stops new clips immediately but
+leaves existing ones, reviewable or archived, exactly where they are.
+
 Under the setting, a line says what the Echo is actually doing right now,
 from its own report rather than from the setting: listening privately,
 streaming, or **button only** with the reason. The home screen has one line
 for the whole fleet — for example *1 of 3 connected Echoes streams audio
 continuously*. The full rules, including exactly when audio leaves an Echo,
 are in [listening.md](listening.md).
+
 
 Things to know about **On this Echo**:
 
@@ -933,6 +968,11 @@ it still asks GitHub when you press it.
   Assistant add-on every household user can reach the dashboard, so read-only
   accounts get turn timings, scores and outcomes without the speech. Enforced
   on the server, not just hidden in the page.
+- **Wake-word sample clips** (`wakeClipCapture`, off by default) — written to
+  disk beside the database and never uploaded, same as utterance recordings
+  above. Playing, downloading, labeling and deleting them is admin-only.
+  Labeling a clip additionally copies it into a permanent archive on disk,
+  organised by label — still never uploaded, still admin-only to reach.
 - **Device serials, WiFi credentials, network names and your fleet's
   configuration.** These live only in the controller's database.
 - **Support bundles** are built only when you ask for one, and sharing the

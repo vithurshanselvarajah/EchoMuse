@@ -37,7 +37,7 @@ const (
 	// volumeBoot is the level before the controller seeds the stored one:
 	// what Init used to leave the DAC at, and so what this read back.
 	volumeBoot = 100
-	numLEDs       = 12
+	numLEDs    = 12
 )
 
 type volumeController struct {
@@ -106,7 +106,7 @@ func (vc *volumeController) SetApply(fn func(int)) {
 // presses pass true; remote sets (controller command / HA) and the boot-time
 // SeedVolume pass false so the ring doesn't light when nobody is at the
 // device.
-func (vc *volumeController) Set(level int, showRing bool) {
+func (vc *volumeController) Set(level int, showRing bool) bool {
 	if level < volumeMin {
 		level = volumeMin
 	}
@@ -115,6 +115,7 @@ func (vc *volumeController) Set(level int, showRing bool) {
 	}
 
 	vc.mu.Lock()
+	changed := vc.level != level
 	vc.level = level
 	// Copy under the lock — SetOnVolumeChange writes this field under mu
 	// from the main goroutine, and button events can fire before that
@@ -135,6 +136,7 @@ func (vc *volumeController) Set(level int, showRing bool) {
 	if cb != nil {
 		cb(level)
 	}
+	return changed
 }
 
 // CancelDisplay ends the volume arc's hold early, releasing the ring back to
@@ -167,19 +169,19 @@ func (vc *volumeController) Get() int {
 }
 
 // StepUp increases volume by one step, within the button band.
-func (vc *volumeController) StepUp() {
+func (vc *volumeController) StepUp() bool {
 	vc.mu.Lock()
 	level := vc.level + volumeStep
 	vc.mu.Unlock()
-	vc.Set(clampToButtonBand(level), true)
+	return vc.Set(clampToButtonBand(level), true)
 }
 
 // StepDown decreases volume by one step, within the button band.
-func (vc *volumeController) StepDown() {
+func (vc *volumeController) StepDown() bool {
 	vc.mu.Lock()
 	level := vc.level - volumeStep
 	vc.mu.Unlock()
-	vc.Set(clampToButtonBand(level), true)
+	return vc.Set(clampToButtonBand(level), true)
 }
 
 // clampToButtonBand holds a stepped level inside [volumeButtonFloor,

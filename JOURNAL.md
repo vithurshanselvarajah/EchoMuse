@@ -4090,3 +4090,105 @@ and real stereo over the jack (#273) are separate.
 Also today: PR #696's wake-sample capture stores the previous session's tail
 as "wake" audio under private listening (its pre-roll is fed only by session
 frames) — changes requested.
+
+## 2026-10-01 (night) to 10-02 — the clicks were dropped writes, not sync
+
+**The Sendspin correction bursts traced through three wrong suspects to a
+bug in every playback path.** In order, each ruled out by its own log line:
+the time filter (smooth through a burst in the quietest-sync minute); BLE
+(the A/B with it off on one Echo showed both bursting); ALSA's position
+report (`hw_ptr` against the kernel's own `tstamp` is within ±8 frames,
+16-frame steps — the "1024-frame granularity" theory was wrong, and said so
+on #707).
+
+**What the pointers showed:** at every tracker reset, `appl_ptr` had moved
+1024 + 16..864 frames between reads instead of 2048. Each mixed period is
+written as two 1024-frame chunks; the second was cut short and the rest of
+it never written. tinyalsa's `pcm_write` ignores the partial count a
+signal-interrupted WRITEI ioctl returns and reports success. ~15 an hour per
+Echo, up to 21ms of audio each — the "occasional crackle" Wil heard — on the
+write that voice and HA music use too. Fix: block every signal on the
+calling thread for the length of `pcm_write` (wilbowes/GoTinyAlsa#2, pinned
+by #711). An hour after: 0 partial writes on both; overnight soak 0 in ~16
+device-hours.
+
+**Defence kept anyway (#710):** `OutputClock` gates readings over 3ms from
+prediction (one 18ms reading inside the 20ms reset had swung its rate
+estimate to −1022ppm), and `pullSource` reads the clock on both sides of the
+status read. Interop worst sync 203µs. Diagnostics stay as per-minute log
+lines (`[sendspin] sync:`, `[sendspin] dac:`, `[speaker] dac step`).
+
+**Still open:** 3–10 tracker resets an hour with a different signature (a
+jump past 20ms, writes whole), ~3× more on FireOS 6. Harmless at 2–8
+corrections a minute.
+
+Also: eMMC wear is now recorded daily and boot reason per boot (#709, schema
+v28); Sendspin's stereo pair works through Music Assistant's channel setting
+(#274 closed); wake-sample capture (#696) merged after its stale pre-roll was
+fixed; #705's centre mic confirmed dead by the beamforming-off test, so a
+fallback mic is real work; DHCP broadcast flag for FireOS 6 emOS merged (#714)
+and needs an emOS release.
+
+## 2026-10-02 (afternoon and evening) — emOS updates over the network, and undoes itself
+
+**An Echo on emOS is now updated from its Updates tab** (#573, PR #719,
+`emos-v0.10`). Until today every emOS release needed a cable, TWRP and the
+wizard per device, and NF had sat on 0.5 for twelve days unnoticed.
+
+**The image is rebuilt, not shipped**, because it carries the device's kernel
+and DTBs. The controller reads the running image off `mmcblk0p10` over the
+shell plane, keeps the kernel and cmdline byte for byte, swaps the ramdisk for
+one built from the release's init and writes it back. That is also why amonet
+1 and 2 needed no separate path: the kernel architecture and the
+`emos.system=` stamp are inside the image read and are carried across.
+
+**#573's first question answered:** a rebuild gets a new image id, since the id
+hashes the ramdisk, so `boot-good.img` is promoted.
+
+**init's rollback was not enough unattended, in two ways.** It counts boots, so
+an image with broken WiFi sits at try 1 until someone power-cycles it three
+times; and it confirms at network-up, so an image with an address that cannot
+run the firmware is promoted. 0.10's init adds a trial: the controller writes
+`/data/emos/update.pending` naming the new image, and removes it once the Echo
+re-registers on that build. Until then init restarts at 180s and the existing
+rollback restores after three tries. Wil chose controller-confirmed over
+network-up, accepting that a controller down through the window costs a good
+update a retry.
+
+**The sequence is written against an `io` and tested with a real shell.**
+`em_emos_update.run_update` runs in `test_emos_update_flow.py` against a
+directory standing in for an Echo, its commands executed by `sh` with busybox.
+That found what reading would not: `dd` without `conv=notrunc`, and that
+Ubuntu's busybox has no `base64` applet, so preflight now probes every tool by
+running it. Python's `$` matches before a trailing newline, which matters for a
+value on its way into a shell command; those use `fullmatch`. `_shell_run`
+gives up after five seconds of silence, which a partition write exceeds, so the
+update has its own `_emos_sh`.
+
+**On hardware, same day.** C95 (amonet 1, 64-bit) and 15LE (amonet 2, 32-bit)
+went 0.9 → a test build from the panel: partition md5 equal to the image sent
+and to the promoted `boot-good.img`, confirmed ten seconds after network-up.
+FireOS 5's own busybox takes `dd conv=notrunc,fsync`, which had been the open
+question. Then a forced failure on C95 with the controller stopped at the
+restart: `boot.state` 1, 2, 3 at about 185 seconds each, amber, and the
+previous image back byte-identical, eleven minutes in all.
+
+**The hardware run found three things.** The controller's own log had no step
+or outcome lines, only the file transfer. The unwatched rollback came back
+reporting nothing and left 7MB on `/data`, because init removes the mark when
+it restores; the controller now treats a pushed image with no mark as an
+update that did not complete. And init now writes `rollback.last` (failed id,
+restored id, tries) so the next rollback is reported as something the Echo
+said. That last one was added AFTER the run and shipped in 0.10 without one,
+by Wil's decision; `trialcheck.c` covers it off-target.
+
+**One mistake of mine:** I rebuilt the dev add-on while Wil had an install
+running, twelve seconds in. It was still reading, so nothing was written and
+the Echo was untouched, but the restart should have been announced first.
+
+**Still open:** a power cut during the roughly one-second write leaves an image
+that fails before init runs, and what the bootloader does then is untested.
+No manual roll-back button and no emOS in the fleet update yet. GA users get
+the panel with the next controller release; until then 0.10 installs by
+wizard. C95 and 15LE are on the `ota1` test build and will be offered 0.10.
+The 09-17 kernel-state diff (VM tunables, no zram) is still unaddressed.

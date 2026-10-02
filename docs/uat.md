@@ -202,10 +202,15 @@ set to **On this Echo** and the other to **On the controller**.
 ## D — Audio out
 
 ### D1 · Volume
-**Do:** Change volume from the dashboard, from HA, and with the device's own
-volume buttons.
-**Expect:** All three agree, and the level survives a reboot.
-**Flag:** Any of the three disagreeing with the others.
+**Do:** Enable Volume button sound. Change volume with the device's own
+buttons while idle, press Volume Up twice more after reaching maximum, then
+change it from HA; repeat both while music is playing.
+**Expect:** The level agrees and survives a reboot. An idle physical-button
+change plays a short, low beep with a quick decay at the new volume, and each
+extra Volume Up press at maximum replays it; HA and active playback stay
+silent.
+**Flag:** A tone from a remote change or over playback, or no tone from an
+idle physical-button change or an extra Volume Up press at maximum.
 
 ### D2 · Speech is intelligible at low volume
 **Do:** Set volume to ~20%, ask something with a long answer.
@@ -411,6 +416,27 @@ the state it is in is the diagnostic.
 tell you to update — it must never update itself.
 **Flag:** A notice with empty notes; or any button that claims to perform the
 update.
+
+### J4 · emOS update is offered (emOS Echoes only)
+**Do:** On an Echo running emOS, Device → **Updates**.
+**Expect:** An **emOS** panel under Firmware with the version on the device
+and the newest release. Update is offered only when the release is newer, and
+a release older than 0.10 reads as installing with the wizard. An Echo on
+FireOS has no emOS panel.
+**Flag:** "Up to date" on an Echo that is behind; an emOS panel on a FireOS
+Echo; "Version not read yet" on an Echo that has been connected for a minute.
+
+### J5 · **Destructive** — apply an emOS update
+**Do:** Press Update and confirm. Keep the Echo powered. Watch the log under
+the panels.
+**Expect:** Checking, reading the running image, building, sending, writing,
+restarting — then "running and confirmed" about a minute after the restart.
+The panel shows the new version and the Echo keeps its WiFi and settings.
+**Flag:** Any step that says something was changed and then fails; an Echo
+that comes back on the old version without the log saying it rolled back.
+**Do not unplug it during "Writing the boot partition".** If it has not
+returned after fifteen minutes, say so in the report before touching it; an
+amber ring means it is restoring the previous image by itself.
 
 ---
 

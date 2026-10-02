@@ -32,6 +32,7 @@ from typing import Optional
 
 import em_config_sections
 import em_recordings
+import em_wake_samples
 
 log = logging.getLogger("echomuse.db")
 
@@ -53,6 +54,12 @@ DEFAULT_DEVICE_CONFIG = {
     # first, because the ring is the only other sign the Echo is listening.
     "wakeSound":        False,
     "wakeSoundLevel":   "medium",   # quiet / medium / loud, played by the Echo
+    # Physical-button volume preview (#637). On by default, matching Alexa's
+    # familiar feedback and giving a useful level reference while idle.
+    "volumeButtonSound": True,
+    # Wake training samples are opt-in; candidates and triggers are saved for admin review.
+    "wakeClipCapture":  False,
+    "wakeClipMinScore": 0.20,
     "adcDigitalGain":   88,
     "adcMicpga":        40,
     # micGainDb: fixed digital gain (dB) the device applies to the full
@@ -1078,6 +1085,40 @@ MIGRATIONS: list[str] = [
 
     UPDATE system_config SET value = '28' WHERE key = 'schema_version';
     """,
+
+    # ── v29 — labelled wake-word training clips ─────────────────────────────
+    """
+    CREATE TABLE IF NOT EXISTS wake_samples (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        device_id TEXT NOT NULL,
+        ts REAL NOT NULL,
+        audio_file TEXT NOT NULL,
+        kind TEXT NOT NULL DEFAULT 'candidate',
+        label TEXT NOT NULL DEFAULT 'unreviewed',
+        model TEXT,
+        score REAL,
+        threshold REAL,
+        device_score REAL,
+        trigger_source TEXT,
+        FOREIGN KEY (device_id) REFERENCES devices(device_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_wake_samples_device_ts
+        ON wake_samples(device_id, ts DESC);
+
+    UPDATE system_config SET value = '29' WHERE key = 'schema_version';
+    """,
+
+    # v30 — the emOS image a device is running: VERSION_ID and BUILD_ID from
+    # its /etc/os-release. Stored for the reason base_os is (v21): "is there
+    # an emOS update" is asked about devices that are mostly offline. NULL on
+    # FireOS and until an emOS device has been asked, which is "unknown" and
+    # is never offered an update.
+    """
+    ALTER TABLE devices ADD COLUMN emos_version TEXT;
+    ALTER TABLE devices ADD COLUMN emos_build TEXT;
+
+    UPDATE system_config SET value = '30' WHERE key = 'schema_version';
+    """,
 ]
 
 # Post-migration fixups that need Python rather than SQL. Keyed by the schema
@@ -1697,6 +1738,17 @@ def set_device_base_os(device_id: str, base_os: Optional[str]) -> None:
         )
 
 
+def set_device_emos(device_id: str, version: Optional[str],
+                    build: Optional[str]) -> None:
+    """Record the emOS image a device is running (schema v30)."""
+    with _tx() as conn:
+        conn.execute(
+            "UPDATE devices SET emos_version = ?, emos_build = ? "
+            "WHERE device_id = ?",
+            (version, build, device_id),
+        )
+
+
 def set_device_kernel(device_id: str, arch: str, release: str) -> None:
     """Record the kernel a device booted (`uname -m`, `uname -r`), per register."""
     with _tx() as conn:
@@ -1801,6 +1853,18 @@ def _clamp_wake_threshold(config: dict, where: str) -> dict:
     return {**config, "owwThreshold": OWW_THRESHOLD_MAX}
 
 
+def _clamp_wake_sample_minimum(config: dict, where: str) -> dict:
+    """Keep the optional audio-capture floor in the UI's [0.05, 0.95] range."""
+    value = config.get("wakeClipMinScore")
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return config
+    fixed = max(0.05, min(0.95, value))
+    if fixed == value:
+        return config
+    log.warning(f"[db] {where}: wakeClipMinScore {value} outside [0.05, 0.95]; storing {fixed}")
+    return {**config, "wakeClipMinScore": fixed}
+
+
 def set_device_config(device_id: str, config: dict) -> None:
     """
     Persist updated config for a device.
@@ -1808,7 +1872,7 @@ def set_device_config(device_id: str, config: dict) -> None:
     The caller is responsible for immediately pushing the config to the
     live device over the control WebSocket if it is currently connected.
     """
-    config = _clamp_wake_threshold(config, device_id)
+    config = _clamp_wake_sample_minimum(_clamp_wake_threshold(config, device_id), device_id)
     with _tx() as conn:
         conn.execute(
             "UPDATE devices SET config = ? WHERE device_id = ?",
@@ -1880,7 +1944,7 @@ def get_global_device_config_raw() -> dict:
 
 def set_global_device_config(config: dict) -> None:
     """Persist updated fleet-wide default device config."""
-    config = _clamp_wake_threshold(config, "fleet")
+    config = _clamp_wake_sample_minimum(_clamp_wake_threshold(config, "fleet"), "fleet")
     with _tx() as conn:
         conn.execute(
             "INSERT OR REPLACE INTO system_config (key, value) VALUES ('global_device_config', ?)",
@@ -2017,10 +2081,11 @@ def set_firmware_previous(device_id: str, version: Optional[str]) -> None:
 
 def delete_device(device_id: str) -> None:
     """
-    Remove a device and all its logs from the registry.
+    Remove a device and its persisted records from the registry.
 
     This is a hard delete — use with care. Logs are removed first to
-    satisfy the foreign key constraint.
+    satisfy foreign keys. Wake-sample audio is unlinked before its rows,
+    within the transaction, so a cleanup failure leaves references for retry.
 
     Saved utterance recordings live on disk rather than in the DB, so no
     cascade reaches them — they are unlinked explicitly here. Leaving a
@@ -2029,6 +2094,15 @@ def delete_device(device_id: str) -> None:
     """
     with _tx() as conn:
         conn.execute("DELETE FROM device_logs WHERE device_id = ?", (device_id,))
+        wake_samples = conn.execute(
+            "SELECT audio_file FROM wake_samples WHERE device_id = ?", (device_id,)
+        ).fetchall()
+        for row in wake_samples:
+            if not em_wake_samples.unlink(device_id, row["audio_file"]):
+                raise OSError(
+                    f"could not remove wake sample {row['audio_file']} for {device_id}"
+                )
+        conn.execute("DELETE FROM wake_samples WHERE device_id = ?", (device_id,))
         conn.execute("DELETE FROM device_boots WHERE device_id = ?", (device_id,))
         conn.execute("DELETE FROM device_wear WHERE device_id = ?", (device_id,))
         conn.execute("DELETE FROM devices WHERE device_id = ?", (device_id,))
@@ -2560,6 +2634,90 @@ def get_wake_counters(device_id: str, since: float) -> list[sqlite3.Row]:
         "ORDER BY hour_ts",
         (device_id, since),
     )
+
+
+def insert_wake_sample(device_id: str, rec: dict) -> int:
+    """Persist metadata for one already-written wake sample; prune by id."""
+    with _tx() as conn:
+        cur = conn.execute(
+            """INSERT INTO wake_samples
+               (device_id, ts, audio_file, kind, label, model, score,
+                threshold, device_score, trigger_source)
+               VALUES (?, ?, ?, ?, 'unreviewed', ?, ?, ?, ?, ?)""",
+            (device_id, _py(rec["ts"]), rec["audio_file"], rec["kind"],
+             rec.get("model"), _py(rec.get("score")), _py(rec.get("threshold")),
+             _py(rec.get("device_score")), rec.get("trigger_source")),
+        )
+        sample_id = cur.lastrowid
+        expired = conn.execute(
+            """SELECT id, audio_file FROM wake_samples WHERE device_id = ?
+               ORDER BY id DESC LIMIT -1 OFFSET ?""",
+            (device_id, em_wake_samples.KEEP_PER_DEVICE),
+        ).fetchall()
+        if expired:
+            # Unlink before deleting metadata. If the process stops during
+            # cleanup, the rows remain available to retry the removals.
+            for row in expired:
+                if not em_wake_samples.unlink(device_id, row["audio_file"]):
+                    raise OSError(
+                        f"could not remove expired wake sample "
+                        f"{row['audio_file']} for {device_id}"
+                    )
+            conn.executemany("DELETE FROM wake_samples WHERE id = ?",
+                             [(r["id"],) for r in expired])
+    return sample_id
+
+
+def get_wake_samples(device_id: str, limit: int = 50) -> list[sqlite3.Row]:
+    return _q(
+        """SELECT id, device_id, ts, audio_file, kind, label, model, score,
+                  threshold, device_score, trigger_source
+           FROM wake_samples WHERE device_id = ? ORDER BY id DESC LIMIT ?""",
+        (device_id, max(1, min(int(limit), 100000))),
+    )
+
+
+def set_wake_sample_label(device_id: str, sample_id: int, label: str) -> bool:
+    if label not in ("wake", "not_wake", "uncertain"):
+        return False
+    with _tx() as conn:
+        row = conn.execute(
+            """SELECT audio_file, kind, model, score, threshold, device_score,
+                      trigger_source, ts FROM wake_samples
+               WHERE device_id = ? AND id = ?""",
+            (device_id, int(sample_id)),
+        ).fetchone()
+        if row is None:
+            return False
+        cur = conn.execute(
+            "UPDATE wake_samples SET label = ? WHERE device_id = ? AND id = ?",
+            (label, device_id, int(sample_id)),
+        )
+        updated = cur.rowcount == 1
+    # Best-effort: a failed archive copy must not fail the label call itself.
+    if updated:
+        try:
+            em_wake_samples.archive(device_id, row["audio_file"], label, dict(row))
+        except Exception as e:
+            log.warning(f"[db] Wake sample archive failed for {device_id}/{sample_id}: {e}")
+    return updated
+
+
+def delete_wake_sample(device_id: str, sample_id: int) -> str | None:
+    with _tx() as conn:
+        row = conn.execute(
+            "SELECT audio_file FROM wake_samples WHERE device_id = ? AND id = ?",
+            (device_id, int(sample_id)),
+        ).fetchone()
+        if row is None:
+            return None
+        if not em_wake_samples.unlink(device_id, row["audio_file"]):
+            raise OSError(
+                f"could not remove wake sample {row['audio_file']} for {device_id}"
+            )
+        conn.execute("DELETE FROM wake_samples WHERE device_id = ? AND id = ?",
+                     (device_id, int(sample_id)))
+        return row["audio_file"]
 
 
 def record_device_stats(device_id: str, stats: dict) -> None:

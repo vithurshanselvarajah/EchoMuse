@@ -164,15 +164,15 @@ func NewServer(buttonController buttons.Controller, microphone mic.Microphone, s
 // A button press makes the device's level authoritative (see volumeSeeded):
 // its change report updates the controller's stored value, and a config
 // push arriving later this run must not override it.
-func (s *Server) VolumeStepUp() {
+func (s *Server) VolumeStepUp() bool {
 	s.volumeSeeded.Store(true)
-	s.volume.StepUp()
+	return s.volume.StepUp()
 }
 
 // VolumeStepDown decreases volume one step — called by button handler.
-func (s *Server) VolumeStepDown() {
+func (s *Server) VolumeStepDown() bool {
 	s.volumeSeeded.Store(true)
-	s.volume.StepDown()
+	return s.volume.StepDown()
 }
 
 // SetVolume sets volume to an explicit level (0–volumeMax) — called by controller
@@ -207,6 +207,13 @@ func (s *Server) VolumeSeeded() bool {
 // VolumeLevel returns the current volume level (0–volumeMax).
 func (s *Server) VolumeLevel() int {
 	return s.volume.Get()
+}
+
+// VolumeAtMax reports whether a further physical Volume Up press is pinned at
+// the top of the supported clean-output range. The button handler uses it to
+// replay the preview cue even though the numeric level cannot change.
+func (s *Server) VolumeAtMax() bool {
+	return s.volume.Get() >= volumeMax
 }
 
 // SetVolumeApply wires what applies the volume to the audio (the speaker's

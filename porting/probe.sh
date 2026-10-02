@@ -249,8 +249,8 @@ if [ $MICS = 1 ]; then
     # Amazon's own daemons — so the holder is looked up by pid in init's own
     # record (init.svc_debug_pid.<name>, Android 7+) rather than guessed.
     svc=""
-    case "$ownername" in 
-      *mediaserver*) svc=media ;; 
+    case "$ownername" in
+      *mediaserver*) svc=media ;;
       */system/bin/mixer*) svc=mixer ;;
     esac
     if [ -z "$svc" ] && [ -n "$owner" ]; then

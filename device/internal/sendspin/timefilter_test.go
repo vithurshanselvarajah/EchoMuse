@@ -73,3 +73,18 @@ func TestTimeSyncIntervalBacksOffAsTheEstimateTightens(t *testing.T) {
 		t.Errorf("error %dus: want 3000ms, got %d", f.errorUs(), got)
 	}
 }
+
+func TestSyncDiagWindow(t *testing.T) {
+	f := newTimeFilter()
+	f.update(100, 40, 1_000)
+	f.update(130, 900, 2_000)
+	f.update(90, 60, 3_000)
+	f.update(500, 10, 3_000) // not after the last update: ignored, so not counted
+	d := f.takeDiag()
+	if d.N != 3 || d.DelayMinUs != 40 || d.DelayMaxUs != 900 || d.MeasMinUs != 90 || d.MeasMaxUs != 130 {
+		t.Fatalf("diag = %+v", d)
+	}
+	if again := f.takeDiag(); again.N != 0 {
+		t.Fatalf("window not reset: %+v", again)
+	}
+}

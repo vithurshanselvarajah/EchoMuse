@@ -118,9 +118,10 @@ The wizard offers two ways to run EchoMuse on the Dot:
   Dots that have one, and the action button as an event you can automate.
 - **A dashboard** for setup, updates, per-device settings (EQ, LED ring, mic
   tuning), logs and a history of voice turns.
-- **Firmware updates over WiFi**, with automatic rollback if a new version
-  fails to start. emOS itself is updated by re-running the wizard, for now
-  ([#573](https://github.com/wilbowes/EchoMuse/issues/573)).
+- **Updates over WiFi**, for the firmware and for emOS itself, each with
+  automatic rollback if the new version fails. emOS updates need emOS 0.10 as
+  the release to install and a controller newer than 2.25.0; before that,
+  emOS is updated by re-running the wizard.
 
 ## Privacy
 

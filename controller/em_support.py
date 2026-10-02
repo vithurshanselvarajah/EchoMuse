@@ -66,6 +66,7 @@ _DEVICE_FIELDS = (
     "first_seen", "last_seen", "config_sections", "use_global_config",
     "esphome_port", "ble_proxy_port", "ble_proxy_enabled",
     "base_os", "kernel_arch", "kernel_release",
+    "emos_version", "emos_build",
 )
 
 # Config keys are behaviour, not secrets — but the WiFi credential is neither
