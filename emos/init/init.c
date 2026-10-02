@@ -76,7 +76,9 @@
  * every reference site would be a separate diff; the aliases keep
  * the diff to this file alone. */
 #define CACHE        BOARD_CACHE_PART
+#ifndef BOOTDEV
 #define BOOTDEV      BOARD_BOOT_PART
+#endif
 #ifndef LEDDIR
 #define LEDDIR       BOARD_LED_NODE
 #endif
