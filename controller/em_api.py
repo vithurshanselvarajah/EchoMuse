@@ -5691,8 +5691,6 @@ async def _fetch_emos_payload(arch: str, board: str = "biscuit") -> tuple:
             f"The payload in emOS release {version} is not usable: {e}", 502)
 
     files = payload["files"]
-    init_name = EMOS_INIT_ASSETS.get(arch,
-                                     EMOS_INIT_ASSETS[em_emos_build.ARCH_ARM64])
     init = files.get(init_name)
     if init is None:
         return None, {}, version, _error(
