@@ -10,6 +10,18 @@ The device application owns this setup. Radar is identified by the exact
 startup timing and mixer writes; identifying Radar does not apply Biscuit's
 thermal tuning.
 
+## Listening tests
+
+When judging Radar's sound, compare with the bass guard disabled and the EQ
+flat; leave the limiter enabled. The guard is tuned for the Dot's smaller
+driver and may remove bass the Echo 2 woofer can reproduce. On one Echo 2
+running build [#687](https://github.com/wilbowes/EchoMuse/pull/687), ordinary
+TTS drove guard reduction to 30dB, and quieter replies reached 13.6dB. Turning
+the guard off made an immediate audible improvement. The dashboard's music
+EQ preset also sounded worse than flat on that unit. These are tester
+observations from one device, not Radar-wide tuning measurements; no Radar
+defaults are changed here.
+
 On Radar, the application:
 
 1. Asserts physical mute before stopping the stock media services.
@@ -34,6 +46,18 @@ from loading.
 
 Application OTA delivers the setup; the controller's existing startup-script
 synchronization delivers supervisor changes. No kernel or emOS flash is needed.
+
+## Playback tuning for Radar testers
+
+The default bass guard and the dashboard's Music EQ preset were tuned for the
+Dot 2 driver. A Radar tester reported the guard reaching its full 30dB depth
+on ordinary TTS, making speech sound thin, and preferred flat EQ to the Music
+preset. This is one device's listening report, not a measured Radar-wide
+profile. For an initial Radar listening test, set **Config → Playback → EQ**
+to **Flat** and turn **Speaker protection** off. Leave the limiter enabled;
+it protects against peaks independently of the bass guard. These are playback
+settings, not the Radar startup calibration above. Biscuit keeps the existing
+guard-enabled default.
 
 ## Validation and limits
 
