@@ -2622,6 +2622,7 @@ class _EmosIO:
 
     def __init__(self, device_id: str, live, override: tuple | None):
         self.device_id, self.live, self.override = device_id, live, override
+        self.board_id = getattr(live, "board_id", None)
 
     async def sh(self, cmd: str, timeout: float) -> str:
         return await _emos_sh(self.live, cmd, timeout)
@@ -2633,11 +2634,13 @@ class _EmosIO:
         return "" if sent else str(sent)
 
     async def payload(self, arch: str) -> tuple:
+        board = getattr(self, "board_id", None) or "biscuit"
         if self.override is not None:
             init_bin, sbin, version, err = _select_emos_payload(
-                self.override[0], arch, self.override[1])
+                self.override[0], arch, self.override[1], board)
         else:
-            init_bin, sbin, version, err = await _fetch_emos_payload(arch)
+            init_bin, sbin, version, err = await _fetch_emos_payload(arch,
+                                                                      board)
         if err is not None:
             try:
                 reason = json.loads(err.text)["error"]

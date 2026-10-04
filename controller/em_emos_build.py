@@ -827,7 +827,8 @@ def radar_initramfs_kernel(zimage: bytes) -> bytes:
 def build_emos_image(reference: bytes, init_binary: bytes, version: str,
                      build_id: str = "", sbin: dict = None,
                      system_part: int = None,
-                     board_id: str = None) -> dict:
+                     board_id: str = None,
+                     preserve_boot_fields: bool = False) -> dict:
     """Build the image, refusing rather than warning at every gate.
 
     Returns the image and what went into it, so the wizard can show the user
@@ -909,9 +910,17 @@ def build_emos_image(reference: bytes, init_binary: bytes, version: str,
     # honest source for a board we have not been told about by name; the
     # default keeps older callers (and older images) working.
     resolved_board = board_id or reference_board_id(reference) or BOARD_DEFAULT
-    zimage = radar_initramfs_kernel(parts["zimage"]) if resolved_board == "radar" else parts["zimage"]
+    # An in-place OTA starts with an emOS image, not a stock vendor image.
+    # Its kernel is already prepared for the board and its cmdline selects the
+    # board runtime. Leave those boot-critical fields untouched while only
+    # replacing the ramdisk.
+    zimage = (parts["zimage"] if preserve_boot_fields else
+              radar_initramfs_kernel(parts["zimage"])
+              if resolved_board == "radar" else parts["zimage"])
     image = pack(parts, zimage, parts["dtbs"], ramdisk,
-                 system_part=system_part, board_id=resolved_board)
+                 extra_cmdline="" if preserve_boot_fields else RAMOOPS_CMDLINE,
+                 system_part=system_part,
+                 board_id="" if preserve_boot_fields else resolved_board)
     return dict(
         image=image,
         md5=hashlib.md5(image).hexdigest(),
@@ -923,7 +932,9 @@ def build_emos_image(reference: bytes, init_binary: bytes, version: str,
         dtb_size=len(parts["dtbs"]),
         ramdisk_size=len(ramdisk),
         board_id=resolved_board,
-        kernel_patch="radar-initramfs" if resolved_board == "radar" else "",
+        kernel_patch=("radar-initramfs"
+                      if resolved_board == "radar" and not preserve_boot_fields
+                      else ""),
         kernel_addr=parts["kaddr"],
         # Read back out of the image rather than reconstructed, so what the
         # wizard shows is what was actually written. Rebuilding it here meant
