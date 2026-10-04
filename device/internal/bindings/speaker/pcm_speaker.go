@@ -4,6 +4,7 @@ package speaker
 
 import (
 	"context"
+	"errors"
 	"log"
 	"math"
 	"os"
@@ -21,8 +22,6 @@ import (
 	"github.com/Binozo/GoTinyAlsa/pkg/tinyalsa"
 )
 
-// cardNr/deviceNr live in pcmstatus.go so the host test can pin them against
-// the status path — this file is ARM-only (build tag `server`).
 const periodSize = 2048
 
 // The hardware tier: what ALSA holds ahead of the DAC. It is sized ONLY for
@@ -65,8 +64,12 @@ const primePeriods = 24
 var silencePeriod = make([]byte, periodBytes)
 
 type PcmSpeaker struct {
-	radar   bool
-	session *tinyalsa.AudioSession
+	radar bool
+	// pcm is the playback device, found by name (pkg/board) in Init, and
+	// statusFile its substream's status in procfs.
+	pcm        board.PCMAddr
+	statusFile string
+	session    *tinyalsa.AudioSession
 	stopCh  chan struct{}
 	// jackInserted is the plug position last applied by SetJackRouting, and
 	// jackKnown says whether one has been applied at all. The reconcile loop
@@ -193,7 +196,7 @@ func (p *PcmSpeaker) pullSource() []byte {
 		return nil
 	}
 	before := time.Now()
-	b, err := os.ReadFile(statusPath(cardNr, deviceNr))
+	b, err := os.ReadFile(p.statusFile)
 	read := time.Since(before)
 	if err != nil {
 		return nil
@@ -257,6 +260,12 @@ func NewPcmSpeaker(echoTap func([]byte), levelTap func(rms float64)) (*PcmSpeake
 
 func (p *PcmSpeaker) Init() (err error) {
 	p.radar = board.Detect("") == board.Radar
+	pb := board.CurrentLayout().Playback
+	if pb == nil {
+		return errors.New("speaker: playback PCM not found on this board")
+	}
+	p.pcm = *pb
+	p.statusFile = statusPath(pb.Card, pb.Device)
 	if p.radar {
 		defer func() {
 			if err != nil {
@@ -283,7 +292,7 @@ func (p *PcmSpeaker) Init() (err error) {
 	// device where EchoMuse drives the codec directly, mediaserver has no
 	// work to do and is only ever in the way.
 	exec.Command("stop", "media").Run()
-	waitForFreePcm(cardNr, deviceNr, pcmFreeTimeout)
+	waitForFreePcm(p.pcm.Card, p.pcm.Device, pcmFreeTimeout)
 	if p.radar {
 		if err = prepareRadarSpeaker("/system/etc/audio_device.xml"); err != nil {
 			return err
@@ -296,7 +305,7 @@ func (p *PcmSpeaker) Init() (err error) {
 	codec.EnsureRoutes()
 	mixer.Set(mixer.PlaybackVolume, "0") // mute before touching amp or stream
 
-	device := tinyalsa.NewDevice(cardNr, deviceNr, pcm.Config{
+	device := tinyalsa.NewDevice(p.pcm.Card, p.pcm.Device, pcm.Config{
 		Channels:         2,
 		SampleRate:       48000,
 		PeriodSize:       alsaPeriodSize,

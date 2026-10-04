@@ -654,7 +654,7 @@ def test_a_starved_decoder_is_reported_as_a_source_stall(caplog):
         em_player._sessions["office"] = s
         em_player.SOURCE_STALL_MS = 200.0        # keep the test quick
 
-        with caplog.at_level(logging.WARNING, logger="player"):
+        with caplog.at_level(logging.WARNING, logger="echomuse.player"):
             await s.play("http://radio/stream")
             await asyncio.sleep(1.2)
 
@@ -972,7 +972,7 @@ def test_a_refused_decoder_explains_itself_in_the_log(caplog):
             ])
         s._spawn_decoder = refused
 
-        with caplog.at_level(logging.ERROR, logger="player"):
+        with caplog.at_level(logging.ERROR, logger="echomuse.player"):
             await s.play("https://radio.example/stream")
             await asyncio.wait_for(s._task, 5)
 
@@ -997,7 +997,7 @@ def test_expected_teardowns_stay_quiet(caplog):
         device = FakeDevice()
         _wire(device)
         s = StubSession("office", periods=2, endless=True)
-        with caplog.at_level(logging.ERROR, logger="player"):
+        with caplog.at_level(logging.ERROR, logger="echomuse.player"):
             await s.play("http://radio/stream")
             await asyncio.sleep(0.05)
             await s.pause()
@@ -1053,7 +1053,7 @@ def test_a_dead_source_ends_the_stream_and_reports_idle(caplog, monkeypatch):
             s.procs.append(proc)
             return proc
 
-        with caplog.at_level(logging.ERROR, logger="player"):
+        with caplog.at_level(logging.ERROR, logger="echomuse.player"):
             await s.play("http://ma/flow/stream")
             await asyncio.wait_for(s._task, 10)
         return device, s
@@ -1352,7 +1352,7 @@ def test_a_slow_read_while_well_ahead_is_not_a_stall(caplog):
         em_player._sessions["office"] = s
         em_player.SOURCE_STALL_MS = 200.0
 
-        with caplog.at_level(logging.WARNING, logger="player"):
+        with caplog.at_level(logging.WARNING, logger="echomuse.player"):
             await s.play("http://radio/stream")
             await asyncio.sleep(0.6)
 

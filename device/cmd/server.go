@@ -50,6 +50,7 @@ start_server.sh, which restarts it; do not run a second copy by hand).
 
   version         print the firmware version and build time
   platform-init   apply the board's platform settings, for emOS's boot
+  board           print the board and where each part was found; changes nothing
   help            this text
 `
 
@@ -62,6 +63,18 @@ func main() {
 		switch os.Args[1] {
 		case "platform-init":
 			os.Exit(platformInit())
+		case "board":
+			// Read-only, so it is safe beside a running server: what a
+			// tester on a new board pastes back (#541).
+			layout := board.CurrentLayout()
+			fmt.Printf("board: %s\n", board.IDOf(layout.Board))
+			for _, n := range layout.Notes {
+				fmt.Println(n)
+			}
+			fmt.Printf("mute led gpio: %q\n", layout.MuteLEDGPIO)
+			fmt.Printf("light sensor: %q (%s)\n", layout.LightSensor.Driver, layout.LightSensor.Attr)
+			fmt.Printf("bluetooth hci: %q\n", layout.HCI)
+			os.Exit(0)
 		case "version", "--version", "-v":
 			built := "unknown"
 			if sec, err := strconv.ParseInt(client.BuildUnix, 10, 64); err == nil {
@@ -101,6 +114,19 @@ func main() {
 	// every start — see applyCoreFloor for why the mic pipeline's 160ms
 	// deadline makes it worth doing.
 	applyCoreFloor()
+
+	// Which board this is, and where each part the bindings open was found
+	// (#541). A part found by its old number instead of by name says so here.
+	var boardReport sync.Once
+	layout := board.CurrentLayout()
+	if layout.Board == nil {
+		log.Printf("[board] not identified — using biscuit's layout")
+	} else {
+		log.Printf("[board] %s", layout.Board.ID)
+	}
+	for _, n := range layout.Notes {
+		log.Printf("[board] %s", n)
+	}
 
 	buttonController, err := internalbuttons.NewButtonController()
 	if err != nil {
@@ -295,7 +321,22 @@ func main() {
 		}
 		controlClient.SendBleAdverts(batch)
 	})
-	applyBleConfig(bleScanner)
+	// Connections for Home Assistant's active proxy (#656). Every Dot reports
+	// the same public Bluetooth address, so links use a random static one
+	// derived from the serial. The bridge speaks only to a controller that
+	// announced ble_connect; to any other, results would be frames it ignores.
+	bleScanner.Conns().SetOwnAddress(bluetooth.StaticRandomAddr(deviceID))
+	bleBridge := bluetooth.NewBridge(bleScanner.Conns(), func(msg []byte) {
+		if controlClient.HasFeature(client.FeatureBleConnect) {
+			dataClient.SendBleGatt(msg)
+		}
+	})
+	dataClient.OnBleGatt(func(msg []byte) {
+		if controlClient.HasFeature(client.FeatureBleConnect) {
+			bleBridge.Handle(msg)
+		}
+	})
+	applyBleConfig(bleScanner, bleBridge)
 
 	// The BLE scan costs this device's WiFi dearly (see Scanner.Yield), so it
 	// stops whenever the link carries something that cannot wait: the user's
@@ -419,6 +460,9 @@ func main() {
 	go pcmSpeaker.WatchJackRouting(ctx)
 
 	controlClient.OnDisconnected(func() {
+		// A Bluetooth link's results have nowhere to go now, and a
+		// controller that comes back starts from no links.
+		bleBridge.DropAll()
 		// Stop any device-local animation: the controller that owned it is
 		// gone, and the pulse below would otherwise fight its ticker. Safe to
 		// repeat — StopAnim only bumps the animator generation, and the pulse
@@ -484,6 +528,17 @@ func main() {
 	// Connected — stop pulse, report current mute state, restore ring or hand
 	// back to direction arc depending on mute state.
 	controlClient.OnConnected(func() {
+		// A part opened by its old number, or not found at all, is reported
+		// once per process: it is how a kernel that names something
+		// differently is learned about from the field (#541).
+		boardReport.Do(func() {
+			if layout.Board == nil {
+				controlClient.SendLog("warn", "[board] not identified — using biscuit's layout")
+			}
+			for _, p := range layout.Problems {
+				controlClient.SendLog("warn", "[board] "+p)
+			}
+		})
 		if pulseCancel != nil {
 			pulseCancel()
 			pulseCancel = nil
@@ -558,7 +613,7 @@ func main() {
 			s.SeedVolume(msg.StartupVolume)
 		}
 		applyAecConfig(canceller, dataClient)
-		applyBleConfig(bleScanner)
+		applyBleConfig(bleScanner, bleBridge)
 		applySendspinConfig(pcmSpeaker, controlClient, s, deviceID)
 		applyShadowConfig(dataClient, controlClient, pcmSpeaker, s)
 		syncListenState(dataClient, controlClient, false)
@@ -1454,9 +1509,12 @@ func syncListenState(dc *client.DataClient, cc *client.ControlClient, force bool
 	}
 }
 
-func applyBleConfig(scanner *bluetooth.Scanner) {
+func applyBleConfig(scanner *bluetooth.Scanner, bridge *bluetooth.Bridge) {
 	snap := config.Get().Snapshot()
-	scanner.SetEnabled(snap.BleProxyEnabled != nil && *snap.BleProxyEnabled)
+	proxy := snap.BleProxyEnabled != nil && *snap.BleProxyEnabled
+	scanner.SetEnabled(proxy)
+	// Connections live inside the scan session, so they need the proxy on.
+	bridge.SetEnabled(proxy && snap.BleProxyConnections != nil && *snap.BleProxyConnections)
 }
 
 func allLEDs(r, g, b uint8) []led.Led {

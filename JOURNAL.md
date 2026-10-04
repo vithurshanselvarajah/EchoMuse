@@ -4192,3 +4192,323 @@ No manual roll-back button and no emOS in the fleet update yet. GA users get
 the panel with the next controller release; until then 0.10 installs by
 wizard. C95 and 15LE are on the `ota1` test build and will be offered 0.10.
 The 09-17 kernel-state diff (VM tunables, no zram) is still unaddressed.
+
+## 2026-10-03 — a contributor batch read diff by diff, the mic array measured, and why a bare wake name fails
+
+**Nine PRs from one contributor, and what reading every diff found.** @forming
+opened #720–727 in 46 minutes on 10-02 against `ready` issues, then #729. All
+were CI-green and none had been run. #725 (the Link row reads
+`linkTokenIssued`, which the API had sent all along and the dashboard never
+read) was correct and is merged. The rest:
+
+- **#723** reads the preseeded `magisk.db` back with `wc -c < file`, and its
+  verdict looks for `DB=<n>`. The probe never prints that prefix, so the step
+  would fail on every device. Its test passes because the fake device prints
+  `DB=`.
+- **#720** exposes `SERVER_TLS_PORT` to the add-on and describes 0 as the way
+  back for a device with a stale CA. That was true when #163 was written
+  (08-13) and stopped being true in firmware v2.17.0, where a device holding a
+  CA will not dial plain: 0 now takes every credentialed Echo offline until
+  each is re-paired. The PR implemented our stale issue faithfully. #163 is
+  rewritten.
+- **#724** records a barge-in that stands down for no HA, and intends a cue.
+  Traced, not run: the watcher's `record_dropped_wake` sets
+  `last_turn_outcome = "no_ha"`, the interrupted turn then persists and
+  overwrites it with `barged`, and `_leds_turn_end` finds no cue for that. The
+  button's stand-down a few hundred lines below is the shape to copy, in the
+  loop's ceded branch.
+- **#722** adds `LOG_LEVELS`; its parser refuses any name without a dot, so
+  its own documented `echomuse=DEBUG` is rejected.
+- **#721** waits for a playback callback that the 08-27 log on #219 had
+  already ruled out for that fault. Declined.
+- **#726** (delete warning) and **#729** (playback stats across a reconnect,
+  jack state, schema v31) are sound in design. #729 needs a run on our
+  Echoes, which is still owed.
+
+Three of the `ready` issues they picked were stale on our side (#163, half of
+#590, #219's hypothesis). One reply on #725 set the working pattern: one or two
+at a time, plan on the issue first, say what was run and on what. Wil's rule
+from 10-02 is the measure: AI-assisted work is welcome, an unattended run down
+the label is not, and it is judged on engagement rather than authorship.
+@evy0311's #713 (opt-in remote volume arc) and #716 (response level) are the
+contrast: each carries a finding from their own hardware, and #716's
+wide-precision path exists because the simple gain clipped on a real device.
+Both need a rebase and one small fix.
+
+**#712 is the second mixed amonet layout.** v2's bootloader and TWRP with v1's
+partition table: `boot_a_x`/`boot_b_x` on p10/p11, bare names on p17/p18. A
+TWRP FireOS install does not rewrite the GPT, so the reflash advice already on
+the issue will not clear the `_x` names. 15LE in TWRP gave the healthy picture
+to compare against: `lk_a`, `lk_b`, `tee`, `tee1`, `tee2` and `preloader`
+point at `/tmp/ota-decoy/` with the real partitions under `_real`, bare
+`boot_*` are left writable, and p17/p18 do not exist. That suggests v2's
+bootloader simply boots the bare name, so the wizard's v2 path may be safe on
+the mixed layout; the reporter has been asked for a read-only probe.
+`/dev/block/by-name` is a symlink there, so `ls -l` needs the trailing slash.
+
+**Hardware health and calibration became two issues.** #730 (@shawnsi, a
+manual `wakeMic` for a dead centre mic, #705) is the interim; Wil wants health
+checks, self-healing and visible degradation (#731), and a device that tunes
+itself for its room at setup and after a move, guided, startable from the
+dashboard or a button combination (#732). About fifteen of the fifty-odd
+settings depend on the room and fall into four groups with a fixed order:
+capture gain, echo cancelling, detection thresholds, playback against
+listening. A gain change invalidates everything after it.
+
+**The mic array, measured on C95.** Wil said "hey jarvis" from four positions,
+plus a silent take, recorded raw on all channels with `capture_mics` and scored
+per channel offline. 26 utterances:
+
+- every mic passed 24–26 of 26 at 0.5 (centre: 24; best of seven: 26);
+- the level spread between mics for one utterance is about 1 dB, 1.8 at most,
+  and 0.8 dB in the silent room. The array is 72 mm wide; no mic is nearer;
+- two marginal utterances scored 0.24–0.97 across mics at the same loudness,
+  and the centre missed both.
+
+So a unified wake/speech path buys redundancy and nothing in SNR, and
+level-against-the-median is a workable health test. Over all 35 triples,
+any-1-of-3 caught 25–26 with the worst mic's idle noise (0.15 average), and
+at-least-2-of-3 caught 24–26 with idle 0.06, where one mic can neither block
+nor cause a wake.
+
+**The costs, on the same Echo with the firmware stopped.** One wake scorer is
+38% of a core (29 ms per 80 ms frame); three at once are 38% each with none
+late. Seven echo cancellers at the 64 ms hardware-reference tail are 6.04 ms
+per 32 ms period, 19% of a core. Cancellers are affordable on every mic; the
+scorers are what need rationing. Wil's reminder set the order: #229's per-mic
+echo cancelling before selection comes first, since scoring several mics and
+choosing between them during playback both need a clean signal from each.
+
+**Why a bare wake name fails in a multi-phrase model.** Wil's "verona" is
+weaker than "hey verona", and a contributor's bare name does not fire at all
+beside its greeting phrases. He suspected a VAD opening on the first word. There is no
+VAD in front of wake scoring on either side. openWakeWord builds adversarial
+negatives per target phrase from partial phrases and kept input words, and
+only removes texts equal to that phrase, so "hey verona" emits "verona".
+Counted over 20k: "verona" is 2.7% of the negative texts. The fix filters any negative containing a target phrase and is
+on `fix/forge-bare-name-negatives`; a retrain with the original positives was
+running at the close.
+
+**emOS 0.10 installed from the release.** C95 and 15LE went from the `ota1`
+test build to the published `emos-v0.10` from the panel: 1m53s and 1m36s,
+confirmed 67s and 42s after the restart, partition and `boot-good.img` equal
+to the image sent on both.
+
+**Mistakes of mine today.** I told Wil #712 was unanswered from the issue list
+without reading it; he had replied the day before. I reported 24 of 26
+utterances at ≥0.9 on all mics where the count was 23, caught by recounting
+before it was posted. I built the patched forge image without `GPU=1` and the
+retrain ran on six CPU cores until Wil asked whether it was using the GPU; the
+log's first line said so. A benchmark run cost C95 a second 30 seconds offline
+because my filter dropped the result lines.
+
+**Still open:** the #729 hardware run; the rest of the `ready` sweep; the
+controller release that gives GA users the emOS panel; the Verona comparison
+and the forge PR; #731's first build (per-mic cancelling ahead of selection).
+
+## 2026-10-03, evening — Bluetooth connections from probe to a real Home Assistant, and a mistake about other people's data
+
+**The forge fix shipped.** The Verona retrain finished: bare "verona" detected
+at 0.5 went 56.5% → 75.5% on 400 fresh synthetic clips (median peak 0.59 →
+0.92), "hey verona" 99.8% → 100%, and Wil confirmed it at a device. #734
+merged, `forge-v1.1.0` published (CUDA amd64, CPU multi-arch), reported
+upstream as dscripka/openWakeWord#354. A contributor's four-phrase model was
+retrained the same way and its bare name went from almost never firing to
+firing most of the time.
+
+**I published a contributor's wake word and the numbers measured on it**, in a
+commit message, a PR description, the release notes, forge comments and tests,
+and this journal — and had it in the draft upstream report when Wil stopped
+it: "that's someone else's data". The phrase was shared to get a fault looked
+at. Cleaned: both PR descriptions, the tag re-cut on the same commit with new
+notes, the tracked files (#738). Not cleanable without rewriting main: the
+commit messages of #734 and #686. The rule now: before anything is committed,
+posted or tagged, check it for other people's data and use our own or a
+made-up example.
+
+**GoTinyAlsa's write fix went upstream** as Binozo/GoTinyAlsa#3. #608 had been
+told on 10-01 to repin to a commit that predates it; corrected on the PR.
+
+**#656 step 0, on VVV.** `ble_probe` grew a connect mode (#735). The MT6627
+holds LE connections from raw HCI: three at once (only three connectable peers
+were in range, so the limit is not established), MTU exchange and reads with 0
+failures in 1,119. Unlike the scan interval and window, **the chip honours the
+connection interval** — a read took 49ms at 30ms and 999.7ms at 500ms. AP
+resends to VVV over two minutes each: idle 0.1%, one link 3.4–7.7%, two links
+11.4%, scan alone 155.2%, link plus scan 82.1%. HCI version 6 (4.0), LE
+features 0x01, LE Read Buffer Size 0/0 (LE shares the BR/EDR buffers).
+
+**A link costs scan coverage, and the interval decides how much** — the
+opposite of the WiFi result. Scan alone caught 46 adverts in 40s; beside one
+link at 30ms, 11; at 200ms, 25; at 1s, 30. So a link runs at 30ms while used
+and is moved to 500ms after 5s idle with LE Connection Update, which the chip
+accepted (Wil took the recommendation over a fixed slow interval).
+
+**The build (draft #743).** Device: ATT client and GATT discovery from the Core
+Spec; one shared HCI reader, because the scanner's inline command wait threw
+away everything else that arrived and the scan is toggled several times a
+minute; a connection manager for three links with a random static address
+(every Dot reports the same public one); a JSON bridge on a new `0x08`
+data-plane frame, negotiated both ways as `ble_connect`. Controller: the
+ESPHome server turned out to be plaintext only, so Wil's rule that connections
+need encryption meant writing ESPHome's Noise (NNpsk0) responder and framing;
+`em_ble_gatt` maps Home Assistant's Bluetooth messages onto the bridge;
+`bleProxyConnections` (default off), a per-device key (schema v31), the toggle
+with the key under it. Decisions, all Wil's: three slots, the fast/slow
+interval, encryption required rather than warned about, the toggle on the
+Bluetooth panel.
+
+**What only the real implementations found.** The Noise handshake matched
+cacophony's published vector first time, and `aioesphomeapi` connected with the
+right key and refused the wrong one and none. Then three bugs that every test
+of mine had passed:
+- *Order.* A result wakes its task a loop step later, so "write ok" followed by
+  "disconnected" reached Home Assistant reversed, and its client fails a write
+  it is still waiting on when the link drops. Events are now queued behind
+  results.
+- *Encryption removed.* A plaintext port closed silently on a keyed client,
+  which the client reports as a dead device and retries for ever. ESPHome's
+  firmware answers with a plaintext indicator; so do we now, and the client
+  raises the error Home Assistant uses to offer to drop the key. Found by
+  Wil asking what happens to someone who turns connections off again.
+- *Slots.* On the first real run Home Assistant took the key, adverts flowed,
+  and nothing ever connected: it had been told 0 of 0 free, because the Echo
+  reports its slots the moment the setting reaches it, which is before the
+  controller has rebuilt the proxy that should hear it.
+
+**And one that no test ran at all.** The new dashboard panel used a `mono`
+variable every other component defines for itself. Switching the toggle on
+blanked the page on the dev add-on. Nothing in CI checks the dashboard for
+undefined names.
+
+**The real run, as far as it got.** Dev add-on on the branch (schema v31,
+backup taken), VVV on the branch firmware and re-paired. Saving the setting
+created the key and rebuilt VVV's proxy encrypted; Home Assistant's plaintext
+attempts were refused, it asked for the key, and reconnected 27s later. The
+other two dev Echoes' passive proxies stayed plaintext and connected
+throughout, which is the answer to "are existing users forced onto a key": no.
+Home Assistant now sees 3 of 3 slots. **No connection has been made through it
+yet** — the Oral-B integration connects rarely, and four Athom plugs are
+connectable proxies it may prefer.
+
+**Against a phone.** Wil's phone as an nRF Connect peripheral: eleven services
+discovered by the production code, reads, a write read back on a fresh
+connection, indications received. iOS answers Insufficient Authentication on
+its own protected services, as it should with no pairing.
+
+**Other things looked at.** VVV had not been connected to the dev controller
+since at least 10-01: its stored CA does not match, cause not found. Verona
+answered once in Italian because the STT transcribed the utterance as Italian,
+not because of the wake model. A Bluetooth speaker would need Classic
+(pairing, L2CAP channels, AVDTP, SBC); the stock kernel has no Bluetooth
+subsystem, so BlueZ means owning a kernel, and the recommendation is our own
+stack, after this. A cross-browser run of the Config tab (Chromium, Firefox,
+WebKit, two widths) rendered the same 72 controls in all six; the likelier
+cause of "controls missing" reports is fleet-scoped sections dimmed to 45%.
+
+**Mistakes of mine.** The contributor data above. The undefined variable. A
+`pkill -f` whose pattern matched its own shell. A log watch that stopped on an
+unrelated line. I read 9 adverts in 30s as a scan fault before measuring that a
+link costs coverage. And I told Wil VVV was "still to be re-paired" for hours
+without finding out why it had fallen off.
+
+**Still open:** a connection through the proxy from Home Assistant; the
+dashboard undefined-name check; #743's v31 against #729's; #720, #723 and #724
+each waiting on a check of ours; the debloat `shell_run` error on VVV at 21:57.
+
+## 2026-10-04 — Bluetooth connections proven, a timer rule with no language in it, boards found by name, and an Early Access
+
+**What shipped.** Controller `2.26.0-ea.1` and firmware `v2.18.0-ea.1`, both
+tagged on `1b85d17`. Merged on the way: #743 (Bluetooth connections), #759
+(timers), #760 (board framework), #761 (release prep), and from contributors
+#739, #749, #750 plus the journal #745 and the CI follow-up #752. #748 is
+approved and waits on a jack run of ours. #735 and #737 closed.
+
+**Bluetooth connections (#743) got its two missing pieces of evidence.**
+Home Assistant offers no way to choose which proxy it connects through, so
+`gatt_client_check.py --live` points HA's own `aioesphomeapi` client at a
+running proxy: against VVV on the dev add-on it connected to three real
+devices (two Macs and a Watch), MTU 247, five services, Device Name read,
+disconnect, slots 3 → 2 → 3. One connect took 10.7s against 1.0s and 1.4s,
+unexplained. Then HA itself: with the four other proxies' entries disabled,
+the Oral-B integration connected through VVV the moment the brush was switched
+on (first attempt 0x3e, retry connected, held 5s) and the Battery entity read
+96%. A passive scan never sees a phone's name, which is in the scan response,
+so the phone could not be picked out of the listing; the tool prints service
+UUIDs for that reason.
+
+Two things the merge needed. The branch had fallen behind main and GitHub ran
+no checks at all on a conflicting PR, which reads as "no checks reported"
+rather than as a failure. And `dashboard_globals.test.mjs`, written that
+evening to catch a name defined nowhere in `dashboard.jsx`, passed locally on
+a Babel file that is gitignored: the image compiles with esbuild and never had
+Babel. CI now fetches `@babel/standalone` 7.22.5 by sha256 for that one test.
+
+**Timers: the wake word and then anything spoken (#759).** #737 offered
+German stop words. Wil did not want a list per language, and Voice PE's rule
+(the wake word alone stops it) has a cost he named from habit: on other
+assistants the wake pauses the alarm and the words after it decide, so a false
+wake never silences one. The rule built is that: a wake heard while any timer
+rings holds every ring silent, speech stops them, four seconds of silence lets
+them resume. It asks whether someone spoke (the speech gate's Silero, two
+consecutive frames after the preroll that carries the wake word's own tail)
+and never what. The stop-word matchers, the reply suppression and the 18dB
+duck are gone. Wil's steer while it was being built: "easy to support and
+consistent in design", which is why the old paths were removed rather than
+kept beside the new one.
+
+On three Echoes it stopped on speech every time, usually through a different
+Echo than the one ringing, which is the arbitration case that broke the old
+rule on 08-28. Two changes came from Wil using it: the listening ring now
+lights on the Echo that took the wake and on the ringing one, and it stays lit
+until he has finished speaking (five quiet frames), because a ring that went
+dark two frames into "be quiet" looked cut off.
+
+**A timer that was acknowledged and never started.** Three requests on VVV
+got "OK. I have started a 10 second timer." and no timer event. I first said
+every repeat on one Echo failed; C95's second timer then worked, so that was
+wrong. HA's debug view showed the LLM agent answering with no local intent
+handling, inside one conversation that had run since VVV's first timer, and
+after eight quiet minutes the same sentence worked. Wil was not convinced
+before the recovery. It is written into controller/CLAUDE.md as the first
+thing to check, not as proven.
+
+**Boards (#760, #541).** The question was whether we could start a firmware
+that detects its hardware, given what the Dot 3 and Echo 2 ports had found.
+Wil's position: recognise that work in full, build it ourselves so it is
+built on our terms, emOS as the target on every board. Reading both ports'
+diffs first: radar looks like biscuit with an amp board (Wil's theory; same
+SoC, ring, PCM layout, and biscuit turns out to have the same four ADCs), and
+the Dot 3 needs behaviour as well as data. The Dot 3's `device_type_id` was
+already in a snapshot a contributor posted on #527.
+
+What was built is the seam only, with biscuit registered: `Hardware` profiles
+in `pkg/board`, `Resolve`, the bindings switched over, a guard test, `server
+board`, and `docs/boards.md`. Names were read from VVV, 15LE and C95 and are
+identical. It ran as the live firmware on all three. Wil then asked the right
+question about putting it in the EA: where could it fail? Only in the fallback
+path, which no unit of ours takes, and that showed the gap: a fallback was
+logged where nobody would see it. The firmware now sends it to the controller.
+
+**The EA.** Wil moved UAT to GA only, which removed the reason to wait. Notes
+per component; the tags kept their headings; `:latest` still equals `:2.25.0`.
+
+**Other things.** #739 installed its test dependencies unpinned; #752
+constrains them with `-c controller/requirements.txt`. An idea parked for
+later: a webOS port. A scan of issues before the EA found #689 (adoption hangs
+on the add-on, the reporter answered two days ago) and #747 (an Echo scoring
+0.994 ceded to one across the house at 0.484: arbitration takes the earliest
+heard and ignores score). A contributor opened five more PRs after being asked
+for one or two at a time, and answered a user on #712 as if for the project;
+Wil is handling it.
+
+**Mistakes of mine.** The Babel file above. The repeat-fails pattern stated
+before a counter-example arrived. A PR description that said all three Echoes
+had every check when two had some, corrected before merge. "Radar has eight
+mics in a square", taken from a contributor's notes and wrong; Wil knew the
+hardware. Leaning on Home Assistant's HAL to make radar simpler, when the
+target is emOS. And asking for "merge 743" often enough to be teased for it.
+
+**Still open:** #689; a decision on #747; #736 needs a closing reply; #753
+unread; the jack run for #748; telling the port contributors the plan; the
+dev rig is on pre-merge builds, not the released artifacts.

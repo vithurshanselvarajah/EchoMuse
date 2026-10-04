@@ -2083,6 +2083,18 @@ function Detail({ device, token, onClose, onApprove, isAdmin, globalConfig, onDe
               <CircleButton onClick={onClose} title="Close">×</CircleButton>
             </div>
           </div>
+          {/* What deleting leaves behind in Home Assistant (#375). Full width
+              and under the header row, not beside Confirm: a sentence that
+              fits next to a button is not read, and the port it names is the
+              whole value of it. Same amber notice surface as the controller
+              update banner — `em-on-dark` for the dark-theme text tokens it
+              implies, `--notice-bg` for the panel. */}
+          {isAdmin && confirmDelete && (
+            <div className="em-on-dark" style={{ display: 'flex', alignItems: 'baseline', gap: 10, marginBottom: 12, padding: '10px 14px', background: 'var(--notice-bg)', border: '1px solid var(--notice-line)', borderRadius: 8, fontFamily: "'DM Sans',sans-serif", fontSize: 12, color: 'var(--text)', lineHeight: 1.5 }}>
+              <span style={{ fontFamily: "'DM Mono',monospace", fontSize: 9, textTransform: 'uppercase', letterSpacing: '0.12em', color: 'var(--warn)', fontWeight: 600, flexShrink: 0 }}>Home Assistant</span>
+              <span>{_deleteHaWarning(device)}</span>
+            </div>
+          )}
           {device.approved ? (
             <div className="em-tabs" style={{ display: 'flex', gap: 2 }}>
               {TABS.map(t => (
@@ -2157,6 +2169,7 @@ function Detail({ device, token, onClose, onApprove, isAdmin, globalConfig, onDe
               ? `${s.cpuPct.toFixed(0)}%` + (s.coresOnline ? ` · ${s.coresOnline}/${s.coresTotal ?? '?'} cores` : '')
               : null;
             const lq = device.linkQuality;   // loss verdict + per-minute strip (em_tcp)
+            const linkRow = _linkRow(device); // TLS + token, not TLS alone (#590)
             // Thermals: mtktscpu is the CPU zone, maxTempC the hottest of all
             // 11 zones (the PMIC and board sensors can run warmer). Amber past
             // 70C, red past 85C — well below this SoC's limits, because the
@@ -2229,15 +2242,11 @@ function Detail({ device, token, onClose, onApprove, isAdmin, globalConfig, onDe
                          : (s?.volumePct != null ? `${s.volumePct}%` : '—'))}
                     {/* An offline Echo the controller is turning away says why,
                         in the row that describes its link rather than a new one. */}
-                    {row('Link', device.connected
-                           ? (device.linkTls ? 'wss (TLS)' : 'plain ws')
-                           : device.linkRefused
-                             ? <span title="Remove this Echo and approve it again to pair it.">
-                                 {`Refused: ${device.linkRefused.reason}`}
-                               </span>
-                             : '—',
-                         device.connected ? (device.linkTls ? 'var(--ok)' : 'var(--warn)')
-                           : device.linkRefused ? 'var(--error)' : undefined)}
+                    {row('Link',
+                         linkRow.refused
+                           ? <span title="Remove this Echo and approve it again to pair it.">{linkRow.label}</span>
+                           : linkRow.label,
+                         linkRow.color)}
                     {/* The eMMC's own wear report and how the current boot
                         started (schema v28). A watchdog or panic boot is the
                         sign of a hang nobody saw. Both are absent on firmware
@@ -2450,6 +2459,10 @@ function Detail({ device, token, onClose, onApprove, isAdmin, globalConfig, onDe
                 sendspinCapable={!device.connected || !!device.sendspinCapable}
                 sendspinPanel={device.connected && device.sendspinCapable
                   ? <SendspinPairing deviceId={device.device_id} status={device.sendspin} isAdmin={isAdmin}/>
+                  : null}
+                bleConnectCapable={!device.connected || !!device.bleConnectCapable}
+                blePanel={device.connected && device.bleConnectCapable
+                  ? <BleProxyKey deviceId={device.device_id} status={device.bleProxy} isAdmin={isAdmin}/>
                   : null}
                 mixCapable={!device.connected || !!device.audioMixCapable}
                 holdCapable={!device.connected || !!device.buttonHoldCapable}
@@ -3263,6 +3276,36 @@ function _baseOsLabel(baseOs) {
   return baseOs === 'emos' ? 'emOS' : baseOs === 'fireos' ? 'FireOS 5' : null;
 }
 
+// What the Status tab's Link row reads, and in what colour.
+//
+// "wss (TLS)" in green is the check everybody runs before flipping
+// REQUIRE_DEVICE_TLS, so it must not be printed for a link the controller has
+// no token for. em_linkauth.decide rule 4 wants secure AND presented AND
+// expected: a device connected over TLS with nothing on record clears the
+// first two and is locked out by the flip, while its card looked perfect.
+// Seen on the EA controller 2026-09-20 — one device logging "token presented
+// but none on record" on every plane on every dial, reading green throughout.
+//
+// Encrypted is not authenticated, so a missing token is amber whatever the
+// transport is: the row is the answer to "is this link safe", and green
+// asserts more than the controller can support.
+//
+// An ABSENT linkTokenIssued is not a measurement. A dashboard served by an
+// older controller has never heard of the field, so it keeps today's reading
+// rather than claiming "no token" on every device at once — the same
+// NULL-not-zero rule the rest of this file lives by.
+function _linkRow(device) {
+  if (!device.connected) {
+    return device.linkRefused
+      ? { label: `Refused: ${device.linkRefused.reason}`, color: 'var(--error)', refused: true }
+      : { label: '—', color: undefined };
+  }
+  if (!device.linkTls) return { label: 'plain ws', color: 'var(--warn)' };
+  return device.linkTokenIssued === false
+    ? { label: 'wss (TLS) · no token', color: 'var(--warn)' }
+    : { label: 'wss (TLS)', color: 'var(--ok)' };
+}
+
 // The kernel's word size from `uname -m`: "64-bit" or "32-bit". On biscuit it
 // is what separates emOS on FireOS 5's kernel from emOS on FireOS 6's — same
 // ARMv8 chip, both 3.18.19, one kernel built 32-bit.
@@ -3298,6 +3341,24 @@ function _kernelLabel(d) {
 function _kernelTitle(d) {
   return d.kernelArch ? `kernel ${d.kernelArch} ${d.kernelRelease || ''}`.trim() : null;
 }
+
+// What deleting a device leaves behind in Home Assistant (#375). The identity
+// is derived from the serial — so a re-approved device keeps the name and MAC
+// HA has already made an entry for — but the port is not, and the re-added one
+// is allocated fresh. HA is left pointing at a port nobody listens on, and
+// discovery will not offer it again. Naming that port is what the operator has
+// to go and match in HA.
+//
+// A NULL port is a device that never had a satellite, so there is no number to
+// name — the sentence still has to say it. `!= null` rather than a truthiness
+// test, so a 0 is reported as 0 instead of swallowed: absence stores as NULL,
+// never 0.
+const _deleteHaWarning = (d) => {
+  const who  = (d && (d.label || d.device_id)) || 'this device';
+  const port = d && d.esphome_port != null ? ` on port ${d.esphome_port}` : '';
+  return `Home Assistant keeps its entry for ${who}${port}. Delete it there `
+       + `before adding this Echo back.`;
+};
 
 const _INIT_RC_APPEND = `
 service mixer /system/bin/sh
@@ -8836,6 +8897,18 @@ function ProvisionWizard({ token, onClose, knownDevices }) {
               <div className="em-panel em-wizard-recovery">
                 <div className="em-label">This step failed</div>
                 <p className="em-wizard-recovery__hint">{recoveryHint()}</p>
+                {/* The same warning the Detail modal's delete gives (#375).
+                    The matched device is resolved out of knownDevices rather
+                    than carried across, so the port is named here too — only
+                    its id survives on the error. */}
+                {step === 0 && duplicateDeviceId && (() => {
+                  const dup = (knownDevices || []).find(d => d && d.device_id === duplicateDeviceId);
+                  return (
+                    <p className="em-wizard-recovery__hint" style={{ color: 'var(--warn)' }}>
+                      {_deleteHaWarning(dup || { device_id: duplicateDeviceId })}
+                    </p>
+                  );
+                })()}
                 <div className="em-wizard-recovery__actions">
                   <Pill accent onClick={() => runStep(step)}>Retry</Pill>
                    {!CONNECT.has(step) && (
@@ -9165,7 +9238,7 @@ const CONFIG_SECTIONS = {
   "microphones": ["adcMicpga", "adcDigitalGain", "micGainDb", "beamformingEnabled", "beamAngle", "aecEnabled", "aecDelayMs", "aecTailMs", "aecRefSource", "nsAsr", "saveUtterances"],
   "ring": ["ledScene", "ledListenColor", "ledThinkColor", "meterAttack", "meterDecay", "meterFloor", "meterGamma", "meterRef", "meterCurve"],
   "advanced": ["agcEnabled", "vadThreshold", "vadSpeechMs", "vadSilenceMs", "buttonSingleTapEvent", "buttonMultiTapMs", "consolePassword", "consoleTimeoutMin", "controllerEndpoints"],
-  "bluetooth": ["bleProxyEnabled"],
+  "bluetooth": ["bleProxyEnabled", "bleProxyConnections"],
   "sendspin": ["sendspinEnabled", "sendspinUnpaired"]
 };
 
@@ -9326,7 +9399,8 @@ function DeviceConfigForm({ config, onChange, disabled, sections, onScopeChange,
                             hwEchoRef = false, hwRefCapable = true,
                             emosFleet = true, wakeCueCapable = true,
                             volumeCueCapable = true, sendspinCapable = true,
-                            sendspinPanel = null }) {
+                            sendspinPanel = null, bleConnectCapable = true,
+                            blePanel = null }) {
   // emosFleet defaults TRUE for the same reason the capability props above do,
   // and for one more: it gates the console password, which is emOS-only, and
   // disabling a setting because we do not KNOW the fleet has an emOS device
@@ -9992,9 +10066,15 @@ function DeviceConfigForm({ config, onChange, disabled, sections, onScopeChange,
       <Stage n="06" title="Bluetooth"
         chips={<><ScopeChip tone="device">Device</ScopeChip><ScopeChip tone="controller">Controller</ScopeChip></>}
         desc="Turns the device into a Home Assistant Bluetooth proxy: it passively listens for BLE advertisements (presence beacons, temperature sensors) and forwards them to HA as a separate ESPHome device — independent of the voice assistant. Enabling permanently switches the Dot's Bluetooth chip away from Android's stack (Bluetooth speaker pairing, never used by EchoMuse, stops being possible)."
-        scope={scopeEl('bluetooth')} dim={secStyle('bluetooth')}>
+        scope={scopeEl('bluetooth')} dim={secStyle('bluetooth')}
+        after={(config.bleProxyConnections ?? false) ? blePanel : null}>
         <div className="em-grid2" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 24px', ...inputStyle }}>
           <Toggle label="Bluetooth proxy" sub="passive BLE scan → HA (Bermuda, BLE sensors)" value={config.bleProxyEnabled ?? false} onChange={v => set('bleProxyEnabled', v)}/>
+          <Toggle label="Allow connections"
+            sub={bleConnectCapable ? 'proxy goes offline in HA until you enter its key' : 'needs newer firmware on this Echo'}
+            disabled={!bleConnectCapable || !(config.bleProxyEnabled ?? false)}
+            value={config.bleProxyConnections ?? false}
+            onChange={v => set('bleProxyConnections', v)}/>
         </div>
       </Stage>
 
@@ -10017,6 +10097,59 @@ function DeviceConfigForm({ config, onChange, disabled, sections, onScopeChange,
             onChange={v => set('sendspinUnpaired', v)}/>
         </div>
       </Stage>
+    </div>
+  );
+}
+
+// BleProxyKey: one Echo's Bluetooth connection slots, and the encryption key
+// Home Assistant asks for once connections are on (the proxy's port requires
+// it from then). Fetched on request and never kept, like the Sendspin token.
+function BleProxyKey({ deviceId, status, isAdmin }) {
+  const mono = "'DM Mono',monospace";
+  const [key, setKey] = useState(null);
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  const show = async () => {
+    setBusy(true); setError('');
+    try {
+      const r = await API.get(`/api/devices/${deviceId}/ble_proxy/key`);
+      setKey(r.key);
+    } catch (e) {
+      setError(e.error || e.message || 'Could not get the key');
+    } finally {
+      setBusy(false);
+    }
+  };
+  const copy = () => {
+    navigator.clipboard.writeText(key).then(() => setCopied(true)).catch(() => {});
+  };
+
+  const on = !!(status && status.connections);
+  let line = 'Save to turn connections on';
+  if (on) {
+    line = status.slotsLimit
+      ? `${status.slotsFree} of ${status.slotsLimit} connections free`
+      : 'Waiting for the Echo';
+    if (!status.haConnected) line += ' · Home Assistant not connected';
+  }
+
+  return (
+    <div style={{ fontFamily: mono, fontSize: 11, color: 'var(--text2)', display: 'flex', flexDirection: 'column', gap: 8 }}>
+      <div>{line}</div>
+      {on && isAdmin && !key && (
+        <div><Pill small disabled={busy} onClick={show}>{busy ? 'Fetching…' : 'Show encryption key'}</Pill></div>
+      )}
+      {key && (
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', minWidth: 0 }}>
+          <span style={{ wordBreak: 'break-all', userSelect: 'all' }}>{key}</span>
+          <Pill small onClick={copy}>{copied ? 'Copied' : 'Copy'}</Pill>
+          <Pill small onClick={() => { setKey(null); setCopied(false); }}>Hide</Pill>
+        </div>
+      )}
+      {key && <div style={{ color: 'var(--muted)', fontSize: 10 }}>Home Assistant asks for this on the BT Proxy device. Anyone with it can use this Echo's connections.</div>}
+      {error && <div style={{ color: 'var(--error)' }}>{error}</div>}
     </div>
   );
 }
