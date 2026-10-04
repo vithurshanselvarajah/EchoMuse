@@ -1,0 +1,3 @@
+I: Bus=0019
+N: Name="gpio-keys"
+H: Handlers=event2

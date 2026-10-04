@@ -259,7 +259,7 @@ func NewPcmSpeaker(echoTap func([]byte), levelTap func(rms float64)) (*PcmSpeake
 }
 
 func (p *PcmSpeaker) Init() (err error) {
-	p.radar = board.Detect("") == board.Radar
+	p.radar = board.Current() == board.Radar
 	pb := board.CurrentLayout().Playback
 	if pb == nil {
 		return errors.New("speaker: playback PCM not found on this board")

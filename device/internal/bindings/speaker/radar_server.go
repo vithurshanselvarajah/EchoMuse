@@ -12,7 +12,7 @@ import (
 // Radar adds a physical mute and a longer settling sequence. Keep those
 // requirements separate from the shared PCM loop and other boards' timing.
 func (p *PcmSpeaker) startRadarOutput() error {
-	readStatus := func() ([]byte, error) { return os.ReadFile(statusPath(cardNr, deviceNr)) }
+	readStatus := func() ([]byte, error) { return os.ReadFile(p.statusFile) }
 	if err := waitForRunningPCM(readStatus, p.deadCh, 3*time.Second); err != nil {
 		return err
 	}
