@@ -20,8 +20,9 @@ func TestRadarResolvesItsConfirmedPartsByName(t *testing.T) {
 		t.Fatalf("fixture detected as %v", IDOf(b))
 	}
 	l := Resolve(radarFOS6, b)
-	if l.VolumeKeys != "/dev/input/event2" {
-		t.Errorf("volume keys %q, want /dev/input/event2", l.VolumeKeys)
+	if l.DotKeys != "/dev/input/event1" || l.VolumeKeys != "/dev/input/event2" {
+		t.Errorf("keys: dot %q volume %q, want event1 and event2",
+			l.DotKeys, l.VolumeKeys)
 	}
 	if want := filepath.Join(radarFOS6, "/sys/bus/i2c/devices/0-003f"); l.LEDRing != want {
 		t.Errorf("led ring %q, want %q", l.LEDRing, want)
@@ -32,11 +33,11 @@ func TestRadarResolvesItsConfirmedPartsByName(t *testing.T) {
 	if l.Playback == nil || *l.Playback != (PCMAddr{0, 23}) {
 		t.Errorf("playback %+v, want card 0 device 23", l.Playback)
 	}
-	if l.DotKeys != "" || l.MuteLEDGPIO != "" || l.LightSensor != (LightSensor{}) || l.HCI != "" {
+	if l.MuteLEDGPIO != "" || l.LightSensor != (LightSensor{}) || l.HCI != "" {
 		t.Errorf("unconfirmed hardware should remain unavailable: %+v", l)
 	}
-	if len(l.Problems) != 1 || !strings.Contains(l.Problems[0], "the board states no name for it") {
-		t.Errorf("only the unstated action key should be unavailable, got %v", l.Problems)
+	if len(l.Problems) != 0 {
+		t.Errorf("confirmed input devices should resolve by name, got %v", l.Problems)
 	}
 }
 
