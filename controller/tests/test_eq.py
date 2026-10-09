@@ -117,3 +117,65 @@ def test_radar_stock_curve_applies_output_trim():
     yb = np.frombuffer(b.process(x), np.int16).astype(float)[fs // 4:]
     ratio_db = 20 * np.log10(np.sqrt((ya**2).mean()) / np.sqrt((yb**2).mean()))
     assert abs(ratio_db - em_eq.RADAR_OUTPUT_TRIM_DB) < 0.05
+
+
+# ─── Radar's volume-banded stock FIR (AFE.cfg "Volume Boundary") ─────────────
+
+def _level_gain(level):
+    return 0.0 if level == 0 else 10 ** ((level - 127) / 40)
+
+
+@pytest.mark.parametrize("level,band", [
+    (0, 0), (47, 0), (81, 0), (82, 1), (93, 1), (94, 2),
+    (101, 2), (102, 3), (110, 3), (111, 4), (127, 4),
+])
+def test_radar_eq_band_by_volume(level, band):
+    """Pinned against the same table as the Go test, so the two ends cannot
+    pick different curves at the same volume. Levels 93 and 110 land exactly
+    on index 60 and 80 and must take that boundary's own file."""
+    assert em_eq.radar_eq_band(_level_gain(level), [50, 60, 70, 80, 100]) == band
+
+
+def test_stock_volume_index_follows_the_speaker_curve():
+    # The curve's own points come back as themselves.
+    for idx, att in em_eq.SPEAKER_MUSIC_CURVE:
+        assert em_eq.stock_volume_index(10 ** (att / 20)) == pytest.approx(idx)
+    assert em_eq.stock_volume_index(0.0) == 0.0
+    assert em_eq.stock_volume_index(1e-6) == 1.0     # below the curve: index 1
+    assert em_eq.stock_volume_index(2.0) == 100.0    # above unity: index 100
+
+
+def test_radar_banded_files_are_a_loudness_compensation():
+    """The point of selecting by volume: the bass boost backs off as the
+    volume goes up. If a future extraction ever produced five copies of one
+    curve, this is where it would show."""
+    banded = em_eq._radar_eq_banded()
+    if banded is None:
+        pytest.skip("radar_eq_banded.json not present")
+    bounds, taps = banded
+    assert bounds == [50, 60, 70, 80, 100]
+    boost80 = [20 * np.log10(abs(np.fft.rfft(t, 48000)[80])) for t in taps]
+    assert all(a > b for a, b in zip(boost80, boost80[1:])), boost80
+    assert boost80[0] > 9.0 and boost80[-1] < 2.0
+
+
+def test_banded_fir_crossfades_on_a_switch():
+    a = np.zeros(32); a[0] = 1.0
+    b = np.zeros(32); b[0] = 0.25
+    f = em_eq._OverlapSaveFIR([a, b])
+    x = np.full(256, 1000.0)
+    f.process(x)
+    f.set_band(1)
+    y = f.process(x)
+    assert y[0] == pytest.approx(1000 * (1 - 1 / 256) + 250 / 256)
+    assert y[-1] == pytest.approx(250.0)
+    assert np.allclose(f.process(x), 250.0)
+
+
+def test_chain_without_a_volume_keeps_eq50():
+    """Every caller that does not pass volume_gain (the controller-side
+    chain) keeps the single EQ_50 curve it always had."""
+    eq = em_eq.StreamingEQ(48000, stock_curve=True)
+    if eq._fir is None:
+        pytest.skip("radar_eq_taps.json not present")
+    assert eq._fir_bounds is None and len(eq._fir._hs) == 1

@@ -3,34 +3,95 @@ package outchain
 import (
 	_ "embed"
 	"encoding/json"
+	"math"
 	"sync"
 )
 
-//go:embed radar_eq_taps.json
-var radarEQTapsJSON []byte
+// Radar's stock FIR is five curves, chosen by volume: AFE.cfg's "Equalizer
+// FIR" lists EQ_50/60/70/80/100.cfg against "Volume Boundary"
+// [50,60,70,80,100]. They are a loudness compensation — EQ_50 boosts 80Hz
+// by +10.1dB, EQ_100 by +1.4dB — not one curve at five gains, which is what
+// biscuit's EQ files are. See controller/em_eq.py's _RADAR_EQ_BANDED_PATH,
+// which this mirrors.
+//
+//go:embed radar_eq_banded.json
+var radarEQBandedJSON []byte
 
-type radarEQTapsFile struct {
-	Taps []float64 `json:"taps"`
+type radarEQBandedFile struct {
+	Boundaries []float64   `json:"boundaries"`
+	Taps       [][]float64 `json:"taps"`
 }
 
 var (
-	radarEQTapsOnce sync.Once
-	radarEQTaps     []float64
+	radarEQBandedOnce sync.Once
+	radarEQBands      [][]float64
+	radarEQBoundaries []float64
 )
 
-// loadRadarEQTaps parses the embedded coefficients once. A corrupt or
-// missing embed (impossible via go:embed at compile time, but checked
-// anyway since a malformed JSON would otherwise panic deep inside eqFIR's
-// constructor) yields a nil slice, which newEQFIR treats as "no stock
-// curve available" rather than crashing the device.
-func loadRadarEQTaps() []float64 {
-	radarEQTapsOnce.Do(func() {
-		var f radarEQTapsFile
-		if json.Unmarshal(radarEQTapsJSON, &f) == nil && len(f.Taps) > 0 {
-			radarEQTaps = f.Taps
+// loadRadarEQBands parses the embedded coefficients once. A corrupt embed,
+// or one whose bands disagree in count or length, yields nil, which the
+// chain treats as "no stock curve available" rather than crashing the
+// device.
+func loadRadarEQBands() ([][]float64, []float64) {
+	radarEQBandedOnce.Do(func() {
+		var f radarEQBandedFile
+		if json.Unmarshal(radarEQBandedJSON, &f) != nil ||
+			len(f.Taps) == 0 || len(f.Taps) != len(f.Boundaries) {
+			return
 		}
+		for _, t := range f.Taps {
+			if len(t) == 0 || len(t) != len(f.Taps[0]) {
+				return
+			}
+		}
+		radarEQBands, radarEQBoundaries = f.Taps, f.Boundaries
 	})
-	return radarEQTaps
+	return radarEQBands, radarEQBoundaries
+}
+
+// speakerMusicCurve is Android's speaker music volume curve
+// (audio_policy_volumes.xml, DEFAULT_DEVICE_CATEGORY_SPEAKER_VOLUME_CURVE):
+// index 0-100 against attenuation in dB, linear in dB between points. The
+// same curve turned stock's volume index into an attenuation, so it is the
+// one that turns ours back into an index.
+var speakerMusicCurve = [][2]float64{{1, -58}, {20, -40}, {60, -17}, {100, 0}}
+
+// stockVolumeIndex is the 0-100 volume index stock would have been at to
+// attenuate by gain — em_eq.stock_volume_index. Rounded half up to 1e-6, so
+// an attenuation exactly on a boundary resolves the same way at both ends.
+func stockVolumeIndex(gain float64) float64 {
+	if gain <= 0 {
+		return 0
+	}
+	att := 20 * math.Log10(gain)
+	pts := speakerMusicCurve
+	idx := pts[len(pts)-1][0]
+	switch {
+	case att >= pts[len(pts)-1][1]:
+	case att <= pts[0][1]:
+		idx = pts[0][0]
+	default:
+		for k := 0; k+1 < len(pts); k++ {
+			i0, a0, i1, a1 := pts[k][0], pts[k][1], pts[k+1][0], pts[k+1][1]
+			if att <= a1 {
+				idx = i0 + (att-a0)/(a1-a0)*(i1-i0)
+				break
+			}
+		}
+	}
+	return math.Floor(idx*1e6+0.5) / 1e6
+}
+
+// radarEQBand is which banded FIR stock plays at this volume gain: the
+// first whose boundary is at or above the index — em_eq.radar_eq_band.
+func radarEQBand(gain float64, boundaries []float64) int {
+	idx := stockVolumeIndex(gain)
+	for i, b := range boundaries {
+		if idx <= b {
+			return i
+		}
+	}
+	return len(boundaries) - 1
 }
 
 // eqFIR runs Radar's stock speaker EQ — a long (2048-tap) FIR, not the
@@ -47,11 +108,15 @@ func loadRadarEQTaps() []float64 {
 // call, same as production, and prove the general overlap-save MATH via
 // fft_test.go instead (which is not tied to any one block size).
 type eqFIR struct {
-	h       []complex128 // taps, zero-padded to fftSize, pre-transformed
-	m       int          // filter length (taps)
-	period  int          // fixed new-samples-per-call this was sized for
-	fftSize int
-	overlap []float64 // last m-1 raw input samples carried across periods
+	h        []complex128   // the current band's taps, zero-padded and transformed
+	hs       [][]complex128 // every band's, the same way; h is one of these
+	band     int
+	fadeFrom int          // band to crossfade FROM on the next period, or -1
+	fadeBuf  []complex128 // the old band's product during a crossfade
+	m        int          // filter length (taps)
+	period   int          // fixed new-samples-per-call this was sized for
+	fftSize  int
+	overlap  []float64 // last m-1 raw input samples carried across periods
 
 	// Reused across every call — one FFT-sized heap buffer and one output
 	// buffer, allocated once here rather than per period. This runs every
@@ -68,26 +133,44 @@ type eqFIR struct {
 // data loaded) — callers must treat a nil *eqFIR as "run nothing",
 // mirroring the controller's fallback when radar_eq_taps.json is absent.
 func newEQFIR(taps []float64, periodSamples int) *eqFIR {
-	m := len(taps)
-	if m == 0 {
+	if len(taps) == 0 {
 		return nil
 	}
+	return newEQFIRBands([][]float64{taps}, periodSamples)
+}
+
+// newEQFIRBands is newEQFIR over several filters of equal length, starting
+// on band 0, switched with setBand. Nil for no bands or unequal lengths.
+func newEQFIRBands(bands [][]float64, periodSamples int) *eqFIR {
+	if len(bands) == 0 || len(bands[0]) == 0 {
+		return nil
+	}
+	m := len(bands[0])
 	fftSize := nextPow2(m - 1 + periodSamples)
 
-	h := make([]complex128, fftSize)
-	for i, v := range taps {
-		h[i] = complex(v, 0)
+	hs := make([][]complex128, len(bands))
+	for b, taps := range bands {
+		if len(taps) != m {
+			return nil
+		}
+		h := make([]complex128, fftSize)
+		for i, v := range taps {
+			h[i] = complex(v, 0)
+		}
+		fft(h, false)
+		hs[b] = h
 	}
-	fft(h, false)
 
 	return &eqFIR{
-		h:       h,
-		m:       m,
-		period:  periodSamples,
-		fftSize: fftSize,
-		overlap: make([]float64, m-1),
-		buf:     make([]complex128, fftSize),
-		out:     make([]float64, periodSamples),
+		h:        hs[0],
+		hs:       hs,
+		fadeFrom: -1,
+		m:        m,
+		period:   periodSamples,
+		fftSize:  fftSize,
+		overlap:  make([]float64, m-1),
+		buf:      make([]complex128, fftSize),
+		out:      make([]float64, periodSamples),
 	}
 }
 
@@ -113,6 +196,18 @@ func (f *eqFIR) process(x []float64) []float64 {
 	}
 
 	fft(buf, false)
+	fading := f.fadeFrom >= 0
+	if fading {
+		if f.fadeBuf == nil {
+			f.fadeBuf = make([]complex128, f.fftSize)
+		}
+		old := f.hs[f.fadeFrom]
+		for i := range buf {
+			f.fadeBuf[i] = buf[i] * old[i]
+		}
+		fft(f.fadeBuf, true)
+		f.fadeFrom = -1
+	}
 	for i := range buf {
 		buf[i] *= f.h[i]
 	}
@@ -121,6 +216,16 @@ func (f *eqFIR) process(x []float64) []float64 {
 	out := f.out
 	for i := range out {
 		out[i] = real(buf[f.m-1+i])
+	}
+	if fading {
+		// Linear crossfade across the period from the old band's output to
+		// the new one's — both filtered the same input history, so this is
+		// a change of curve, faded so it does not land as a step.
+		n := float64(len(out))
+		for i := range out {
+			w := float64(i+1) / n
+			out[i] = real(f.fadeBuf[f.m-1+i])*(1-w) + out[i]*w
+		}
 	}
 
 	// Carry the last m-1 RAW input samples for the next call — history of
@@ -139,6 +244,26 @@ func (f *eqFIR) process(x []float64) []float64 {
 	}
 
 	return out
+}
+
+// setBand switches filter; the next process crossfades into it. Setting the
+// band it is already on does nothing.
+func (f *eqFIR) setBand(b int) {
+	if b == f.band || b < 0 || b >= len(f.hs) {
+		return
+	}
+	f.fadeFrom = f.band
+	f.band = b
+	f.h = f.hs[b]
+}
+
+// startOn puts the filter on band b with no crossfade — for its first
+// period, where there is no previous curve to fade from.
+func (f *eqFIR) startOn(b int) {
+	if b < 0 || b >= len(f.hs) {
+		return
+	}
+	f.band, f.h, f.fadeFrom = b, f.hs[b], -1
 }
 
 func (f *eqFIR) reset() {

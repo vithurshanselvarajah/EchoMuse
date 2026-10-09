@@ -847,6 +847,19 @@ so tone is constant across volume and there is no volume-banded EQ to copy. A
 measured driver response is the remaining unknown, and the item that needs
 hardware.
 
+**That is biscuit. Radar's are five different curves, and it plays the one
+for its volume** (2026-10-10). `EQ_50/60/70/80/100.cfg` off a Radar boost
+80Hz by +10.1/–/–/+5.4/+1.4dB: a loudness compensation, the bass boost backing
+off as the volume rises. `AFE.cfg`'s `"Volume Boundary": [50,60,70,80,100]`
+selects them on Android's 0–100 volume index; we recover that index from the
+volume's attenuation through the speaker music curve in
+`audio_policy_volumes.xml` (`em_eq.stock_volume_index`, mirrored in
+`outchain`), since that curve is what turned stock's index into the
+attenuation. Only a chain that takes the volume (`volume_gain`, Radar on the
+device) can select; the controller-side chain has no volume and keeps
+`EQ_50`. A switch crossfades across one period — both curves filter the same
+input history, so it is a change of curve and not of signal.
+
 ## Ducking: music and voice are separate planes on the device
 
 **A voice turn DUCKS music; it does not pause it** — on firmware announcing

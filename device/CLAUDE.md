@@ -1128,6 +1128,8 @@ as `softVolume` does, and the speaker then settles `softVolume` instead of
 applying it, so nothing is attenuated twice. Only while the chain is ACTIVE:
 an inactive chain (the controller still processing) keeps the volume after,
 as before. Biscuit is unchanged — its single bass band was tuned in place.
+The stock FIR is then chosen BY that volume, as `AFE.cfg` chooses among
+Radar's five `EQ_*.cfg` curves (controller/CLAUDE.md, the output chain).
 
 **The scale stops at the codec's unity gain, and that ceiling is load-bearing.**
 tinymix ctl 61 is the tlv320aic32x4 DAC *digital* volume: 176 steps of 0.5dB

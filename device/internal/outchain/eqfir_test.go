@@ -35,10 +35,10 @@ func randomSlice(rng *rand.Rand, n int, scale float64) []float64 {
 // carry only shows up across a call boundary.
 func TestEQFIRMatchesNaiveFilterAcrossManyPeriods(t *testing.T) {
 	cases := []struct {
-		name          string
-		filterLen     int
-		period        int
-		numPeriods    int
+		name       string
+		filterLen  int
+		period     int
+		numPeriods int
 	}{
 		{"filter_smaller_than_period", 17, 64, 20},
 		{"filter_equal_to_period", 64, 64, 20},
@@ -140,12 +140,73 @@ func TestEQFIRImpulseFilterIsIdentity(t *testing.T) {
 	}
 }
 
-// Confirms the embedded data actually loads and is the right size — a
-// corrupt embed would otherwise only surface as a panic deep inside
-// newEQFIR in production.
-func TestLoadRadarEQTapsFromEmbed(t *testing.T) {
-	taps := loadRadarEQTaps()
-	if len(taps) != 2048 {
-		t.Fatalf("got %d taps, want 2048", len(taps))
+// Confirms the embedded data actually loads and is the right shape — a
+// corrupt embed would otherwise only surface as the stock curve silently
+// not running.
+func TestLoadRadarEQBandsFromEmbed(t *testing.T) {
+	bands, bounds := loadRadarEQBands()
+	if len(bands) != 5 || len(bounds) != 5 {
+		t.Fatalf("got %d bands / %d boundaries, want 5/5", len(bands), len(bounds))
+	}
+	want := []float64{50, 60, 70, 80, 100}
+	for i, b := range bands {
+		if len(b) != 2048 {
+			t.Errorf("band %d: %d taps, want 2048", i, len(b))
+		}
+		if bounds[i] != want[i] {
+			t.Errorf("boundary %d = %g, want %g", i, bounds[i], want[i])
+		}
+	}
+}
+
+// The volume index is recovered through Android's speaker curve, and a
+// level landing exactly on a boundary must resolve to that boundary's own
+// band — the same answers em_eq.radar_eq_band gives, pinned on both sides.
+func TestRadarEQBandByVolume(t *testing.T) {
+	bounds := []float64{50, 60, 70, 80, 100}
+	gain := func(level int) float64 {
+		if level == 0 {
+			return 0
+		}
+		return math.Pow(10, float64(level-127)/40)
+	}
+	for _, tc := range []struct{ level, band int }{
+		{0, 0}, {47, 0}, {81, 0}, {82, 1}, {93, 1}, {94, 2},
+		{101, 2}, {102, 3}, {110, 3}, {111, 4}, {127, 4},
+	} {
+		if got := radarEQBand(gain(tc.level), bounds); got != tc.band {
+			t.Errorf("level %d: band %d, want %d (index %g)",
+				tc.level, got, tc.band, stockVolumeIndex(gain(tc.level)))
+		}
+	}
+}
+
+// A band switch crossfades: the period it happens in starts on the old
+// curve's output and ends on the new one's, and the period after is the
+// new curve alone — the same as a filter that was on it all along.
+func TestEQFIRBandSwitchCrossfades(t *testing.T) {
+	const n = 256
+	a := make([]float64, 32)
+	b := make([]float64, 32)
+	a[0], b[0] = 1, 0.25 // two pure gains, so the outputs are easy to state
+	f := newEQFIRBands([][]float64{a, b}, n)
+	x := make([]float64, n)
+	for i := range x {
+		x[i] = 1000
+	}
+	f.process(x)
+	f.setBand(1)
+	y := append([]float64(nil), f.process(x)...)
+	if math.Abs(y[0]-(1000*(1-1.0/n)+250/float64(n))) > 1e-6 {
+		t.Errorf("first sample of the fade = %g", y[0])
+	}
+	if math.Abs(y[n-1]-250) > 1e-6 {
+		t.Errorf("last sample of the fade = %g, want 250", y[n-1])
+	}
+	y = f.process(x)
+	for i, v := range y {
+		if math.Abs(v-250) > 1e-6 {
+			t.Fatalf("after the fade, sample %d = %g, want 250", i, v)
+		}
 	}
 }

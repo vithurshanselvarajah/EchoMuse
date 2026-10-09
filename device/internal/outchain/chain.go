@@ -130,7 +130,8 @@ type Chain struct {
 	// Stock FIR curve (Radar only — nil taps on every other board, and
 	// newEQFIR(nil, ...) is nil, so fir stays nil there with no extra
 	// gating needed at this level).
-	firTaps  []float64 // resolved once at construction; nil = unavailable
+	firBands  [][]float64 // the volume-banded stock FIR; nil = unavailable
+	firBounds []float64   // each band's upper volume index
 	fir      *eqFIR    // lazily sized to the first period's length
 	wantFIR  bool      // params.StockCurve as of the last apply()
 	firScratch []float64 // reused per period — no per-call allocation
@@ -165,7 +166,7 @@ func New(sampleRate int) *Chain {
 // NewForBoard builds a chain at the given sample rate, inactive, with
 // DefaultParams, with the bass guard tuned for boardID (pkg/board.IDOf) —
 // see bassGuardTuning. The guard always varies by board; the stock FIR
-// curve is only ever available on "radar" (nil firTaps on every other
+// curve is only ever available on "radar" (nil firBands on every other
 // board id, so StockCurve has no effect there regardless of config). The
 // EQ bands are not board-specific; the limiter is overridden for Radar —
 // see apply.
@@ -191,8 +192,8 @@ func NewForBoard(sampleRate int, boardID string) *Chain {
 	}
 	c.preTarget.Store(math.Float64bits(1))
 	if boardID == "radar" {
-		c.firTaps = loadRadarEQTaps()
-		if c.firTaps != nil {
+		c.firBands, c.firBounds = loadRadarEQBands()
+		if c.firBands != nil {
 			c.peq = []biquad{
 				lowShelfQ(radarPEQShelfFc, radarPEQShelfDb, radarPEQShelfQ, fs),
 				peaking(radarPEQPeakFc, radarPEQPeakDb, radarPEQPeakQ, fs),
@@ -249,9 +250,9 @@ func (c *Chain) apply(p Params) {
 	c.lim.setParams(limThresholdDb, limReleaseMs, c.fs)
 	// Actually turning the FIR on/off is deferred to Process, which is the
 	// only place that knows this period's frame count (needed to size it)
-	// — apply only records what is WANTED. No effect at all when firTaps
+	// — apply only records what is WANTED. No effect at all when firBands
 	// is nil (every board but Radar).
-	c.wantFIR = p.StockCurve && c.firTaps != nil
+	c.wantFIR = p.StockCurve && c.firBands != nil
 }
 
 // takePending applies a queued SetParams. Returns the params that are now in
@@ -309,7 +310,8 @@ func (c *Chain) Process(buf []byte) (applied *Params) {
 	// inside eqFIR.process, which is the right failure for that bug
 	// rather than a wrong answer.
 	if c.wantFIR && c.fir == nil {
-		c.fir = newEQFIR(c.firTaps, frames)
+		c.fir = newEQFIRBands(c.firBands, frames)
+		c.fir.startOn(radarEQBand(math.Float64frombits(c.preTarget.Load()), c.firBounds))
 		if c.firScratch == nil || len(c.firScratch) != frames {
 			c.firScratch = make([]float64, frames)
 		}
@@ -331,6 +333,10 @@ func (c *Chain) Process(buf []byte) (applied *Params) {
 		c.applyVolume(c.inScratch)
 	}
 	if c.fir != nil {
+		// The curve stock plays at this volume, read from the target the
+		// volume is ramping to — once per period, as em_eq reads it once
+		// per call. A change crossfades across this period.
+		c.fir.setBand(radarEQBand(math.Float64frombits(c.preTarget.Load()), c.firBounds))
 		copy(c.firScratch, c.inScratch)
 		copy(c.firScratch, c.fir.process(c.firScratch))
 	}

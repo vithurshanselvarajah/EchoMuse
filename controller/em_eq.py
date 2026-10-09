@@ -164,6 +164,72 @@ def _radar_eq_taps() -> np.ndarray | None:
     return _radar_eq_taps_cache
 
 
+# Radar's stock FIR is not one curve: AFE.cfg's "Equalizer FIR" lists
+# EQ_50/60/70/80/100.cfg against "Volume Boundary": [50,60,70,80,100], and
+# they are five different curves — a loudness compensation, not one curve at
+# five gains (that was biscuit's EQ files). EQ_50 boosts 80Hz by +10.1dB,
+# EQ_80 by +5.4dB, EQ_100 by +1.4dB, so the bass boost backs off as the
+# volume goes up and MBCL has less to hold down. Selected by the volume
+# index the boundaries are written in (0-100), recovered from the volume's
+# attenuation through Android's speaker music curve (audio_policy_volumes.xml
+# DEFAULT_DEVICE_CATEGORY_SPEAKER_VOLUME_CURVE) — the same curve that turned
+# stock's index into that attenuation. A file at index b serves every index
+# up to and including b.
+_RADAR_EQ_BANDED_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                     "radar_eq_banded.json")
+_radar_eq_banded_cache: tuple[list, list] | None = None
+
+# (index, attenuation dB) — linear in dB between points, as Android
+# interpolates a volume curve.
+SPEAKER_MUSIC_CURVE = ((1, -58.0), (20, -40.0), (60, -17.0), (100, 0.0))
+
+
+def stock_volume_index(gain: float) -> float:
+    """The 0-100 volume index stock would have been at to attenuate by
+    `gain`. Rounded to 1e-6 (half up) so an attenuation that lands exactly on
+    a boundary resolves the same way here and on the device."""
+    if gain <= 0.0:
+        return 0.0
+    att = 20.0 * math.log10(gain)
+    pts = SPEAKER_MUSIC_CURVE
+    if att >= pts[-1][1]:
+        idx = float(pts[-1][0])
+    elif att <= pts[0][1]:
+        idx = float(pts[0][0])
+    else:
+        idx = float(pts[-1][0])
+        for (i0, a0), (i1, a1) in zip(pts, pts[1:]):
+            if att <= a1:
+                idx = i0 + (att - a0) / (a1 - a0) * (i1 - i0)
+                break
+    return math.floor(idx * 1e6 + 0.5) / 1e6
+
+
+def radar_eq_band(gain: float, boundaries) -> int:
+    """Which of the banded FIRs stock plays at this volume gain."""
+    idx = stock_volume_index(gain)
+    for i, b in enumerate(boundaries):
+        if idx <= b:
+            return i
+    return len(boundaries) - 1
+
+
+def _radar_eq_banded():
+    """(boundaries, [taps, ...]) for Radar's volume-banded stock FIR, loaded
+    once; None if the data file is not present."""
+    global _radar_eq_banded_cache
+    if _radar_eq_banded_cache is None:
+        try:
+            with open(_RADAR_EQ_BANDED_PATH) as f:
+                data = json.load(f)
+        except FileNotFoundError:
+            return None
+        _radar_eq_banded_cache = (list(data["boundaries"]),
+                                  [np.asarray(t, dtype=np.float64)
+                                   for t in data["taps"]])
+    return _radar_eq_banded_cache
+
+
 def _next_pow2(n: int) -> int:
     return 1 << (n - 1).bit_length()
 
@@ -193,21 +259,41 @@ class _OverlapSaveFIR:
     shorter than M-1 is handled the same way as one much longer than it.
     """
 
-    def __init__(self, taps: np.ndarray):
-        self._h = np.asarray(taps, dtype=np.float64)
-        self._m = self._h.size
+    def __init__(self, taps):
+        # One filter, or several of equal length to switch between
+        # (set_band). The input history is the signal's, not any filter's,
+        # so it carries straight across a switch.
+        bands = taps if isinstance(taps, (list, tuple)) else [taps]
+        self._hs = [np.asarray(t, dtype=np.float64) for t in bands]
+        self._m = self._hs[0].size
+        if any(h.size != self._m for h in self._hs):
+            raise ValueError("banded FIR taps must all be the same length")
+        self._h = self._hs[0]
         self._overlap = np.zeros(self._m - 1, dtype=np.float64)
-        self._h_fft_cache: dict[int, np.ndarray] = {}
+        self._h_fft_cache: dict[tuple[int, int], np.ndarray] = {}
+        self._band = 0
+        self._fade_from: int | None = None
 
-    def _h_fft(self, n: int) -> np.ndarray:
-        v = self._h_fft_cache.get(n)
+    def _h_fft(self, n: int, band: int | None = None) -> np.ndarray:
+        band = self._band if band is None else band
+        v = self._h_fft_cache.get((band, n))
         if v is None:
-            # Cached per distinct FFT size seen — the filter itself never
-            # changes, so its transform is only ever recomputed when a
-            # caller's chunk length changes the required FFT size.
-            v = np.fft.rfft(self._h, n=n)
-            self._h_fft_cache[n] = v
+            # Cached per filter and distinct FFT size seen — the filters
+            # themselves never change, so a transform is only recomputed
+            # when a caller's chunk length changes the required FFT size.
+            v = np.fft.rfft(self._hs[band], n=n)
+            self._h_fft_cache[(band, n)] = v
         return v
+
+    def set_band(self, band: int) -> None:
+        """Switch filter. The next process() call crossfades linearly from
+        the old filter's output to the new one's across its samples: both
+        filter the same input history, so this is a change of curve with no
+        discontinuity in the signal, and the fade keeps the change of curve
+        itself from landing as a step."""
+        if band != self._band:
+            self._fade_from = self._band
+            self._band = band
 
     def reset(self) -> None:
         """Zero the carried history — for a mode switch, not a parameter
@@ -220,7 +306,15 @@ class _OverlapSaveFIR:
             return x
         ext = np.concatenate([self._overlap, x])
         n = _next_pow2(ext.size)
-        y = np.fft.irfft(np.fft.rfft(ext, n=n) * self._h_fft(n), n=n)
+        spec = np.fft.rfft(ext, n=n)
+        y = np.fft.irfft(spec * self._h_fft(n), n=n)
+        if self._fade_from is not None:
+            y_old = np.fft.irfft(spec * self._h_fft(n, self._fade_from), n=n)
+            w = np.arange(1, x.size + 1, dtype=np.float64) / x.size
+            seg = slice(self._m - 1, self._m - 1 + x.size)
+            y = y.copy()
+            y[seg] = y_old[seg] * (1.0 - w) + y[seg] * w
+            self._fade_from = None
         # The first (m-1) samples of a length-n circular convolution of an
         # (m-1+L)-sample signal against an m-tap filter are corrupted by
         # wraparound; the next L are the exact linear-convolution result for
@@ -335,11 +429,24 @@ class StreamingEQ:
         # Additive with the 8-band EQ below, not a replacement for it: the
         # curve is Radar's stock tonal correction, bands are still free to
         # shape further on top of it.
-        taps = _radar_eq_taps() if stock_curve else None
-        if stock_curve and taps is None:
-            log.warning("[eq] stock_curve requested but radar_eq_taps.json "
-                        "is missing — falling back to the 8-band EQ alone")
-        self._fir = _OverlapSaveFIR(taps) if taps is not None else None
+        # A chain that takes the volume (volume_gain) plays the stock FIR
+        # stock would at that volume — see _RADAR_EQ_BANDED_PATH. One that
+        # does not has no volume to go by and keeps EQ_50, as before.
+        self._fir_bounds = None
+        banded = (_radar_eq_banded()
+                  if stock_curve and volume_gain is not None else None)
+        if banded is not None:
+            self._fir_bounds, band_taps = banded
+            self._fir = _OverlapSaveFIR(band_taps)
+            self._fir.set_band(radar_eq_band(float(volume_gain),
+                                             self._fir_bounds))
+            self._fir._fade_from = None   # the first curve, not a change of one
+        else:
+            taps = _radar_eq_taps() if stock_curve else None
+            if stock_curve and taps is None:
+                log.warning("[eq] stock_curve requested but radar_eq_taps.json "
+                            "is missing — falling back to the 8-band EQ alone")
+            self._fir = _OverlapSaveFIR(taps) if taps is not None else None
         # ParametricEQ and OutputTrim exist exactly when the FIR does (see
         # RADAR_PEQ_*): the device gates them on the same condition.
         if self._fir is not None:
@@ -484,6 +591,10 @@ class StreamingEQ:
                             and self._vol_target is None):
             return pcm
         samples = np.frombuffer(pcm, dtype=np.int16).astype(np.float64)
+        if self._fir_bounds is not None:
+            # From the target the volume is ramping to, read once per call,
+            # as the device reads it once per period.
+            self._fir.set_band(radar_eq_band(self._vol_target, self._fir_bounds))
         if self._vol_target is not None:
             samples = self._apply_volume(samples)
         if self._fir is not None:
