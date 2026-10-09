@@ -147,9 +147,21 @@ def render(case):
     x = _signal(case["signal"], case["chunks"], case["seed"])
     p0 = _params_at(case["schedule"], 0)
     board = case.get("board", "biscuit")
+    is_radar = board == "radar"
     crossover_hz, threshold_db = em_mbc._tuning_for(board)
-    lim = em_limiter.Limiter(FS, threshold_db=p0["limiterThreshold"],
-                             release_ms=p0["limiterRelease"],
+
+    # Mirrors em_player.py's _limiter_params: Radar overrides the config
+    # value regardless of what the schedule carries, same reason the real
+    # call site does — board identity can't change mid-stream, so this is
+    # safe to decide once per case rather than per chunk here too.
+    def lim_params(p):
+        if is_radar:
+            return em_limiter.RADAR_THRESHOLD_DB, em_limiter.RADAR_RELEASE_MS
+        return p["limiterThreshold"], p["limiterRelease"]
+
+    lim_threshold_db, lim_release_ms = lim_params(p0)
+    lim = em_limiter.Limiter(FS, threshold_db=lim_threshold_db,
+                             release_ms=lim_release_ms,
                              enabled=p0["limiterEnabled"])
     guard = em_mbc.BassGuard(FS, bass_guard_db=p0["guardDb"],
                              enabled=p0["guardEnabled"],
@@ -161,10 +173,11 @@ def render(case):
     out = []
     for c in range(case["chunks"]):
         p = _params_at(case["schedule"], c)
+        cur_lim_threshold_db, cur_lim_release_ms = lim_params(p)
         chain.update(bands=p["bands"], loudness=p["loudness"],
                      limiter_enabled=p["limiterEnabled"],
-                     limiter_threshold=p["limiterThreshold"],
-                     limiter_release=p["limiterRelease"],
+                     limiter_threshold=cur_lim_threshold_db,
+                     limiter_release=cur_lim_release_ms,
                      guard_enabled=p["guardEnabled"], guard_db=p["guardDb"])
         out.append(chain.process(x[c * CHUNK:(c + 1) * CHUNK].tobytes()))
     y = np.frombuffer(b"".join(out), dtype=np.int16)

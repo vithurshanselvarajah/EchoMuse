@@ -83,7 +83,8 @@ func (p Params) String() string {
 // Process runs on the ALSA write goroutine only. SetParams and SetActive may
 // be called from anywhere; they take effect at the next period.
 type Chain struct {
-	fs float64
+	fs      float64
+	boardID string // "biscuit", "radar", or "" — see NewForBoard
 
 	active atomic.Bool // false: Process is a passthrough
 
@@ -119,15 +120,17 @@ func New(sampleRate int) *Chain {
 // see bassGuardTuning. The guard always varies by board; the stock FIR
 // curve is only ever available on "radar" (nil firTaps on every other
 // board id, so StockCurve has no effect there regardless of config). The
-// EQ bands and limiter are not board-specific.
+// EQ bands are not board-specific; the limiter is overridden for Radar —
+// see apply.
 func NewForBoard(sampleRate int, boardID string) *Chain {
 	fs := float64(sampleRate)
 	c := &Chain{
-		fs:    fs,
-		eq:    eq{fs: fs},
-		guard: newBassGuard(fs, boardID),
-		lim:   newLimiter(fs),
-		idle:  true,
+		fs:      fs,
+		boardID: boardID,
+		eq:      eq{fs: fs},
+		guard:   newBassGuard(fs, boardID),
+		lim:     newLimiter(fs),
+		idle:    true,
 	}
 	if boardID == "radar" {
 		c.firTaps = loadRadarEQTaps()
@@ -159,7 +162,11 @@ func (c *Chain) apply(p Params) {
 	c.guard.enabled = p.GuardEnabled
 	c.guard.floorDb = math.Min(p.GuardDb, 0)
 	c.lim.enabled = p.LimiterEnabled
-	c.lim.setParams(p.LimiterThresholdDb, p.LimiterReleaseMs, c.fs)
+	limThresholdDb, limReleaseMs := p.LimiterThresholdDb, p.LimiterReleaseMs
+	if c.boardID == "radar" {
+		limThresholdDb, limReleaseMs = radarLimiterThresholdDb, radarLimiterReleaseMs
+	}
+	c.lim.setParams(limThresholdDb, limReleaseMs, c.fs)
 	// Actually turning the FIR on/off is deferred to Process, which is the
 	// only place that knows this period's frame count (needed to size it)
 	// — apply only records what is WANTED. No effect at all when firTaps

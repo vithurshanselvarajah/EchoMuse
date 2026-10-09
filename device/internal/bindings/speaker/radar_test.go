@@ -16,8 +16,8 @@ import (
 // this only with a fresh measurement on real hardware to back it up; see
 // the constant's own doc comment for how this one was obtained.
 func TestRadarDacUnityMatchesWhatWasMeasuredOnHardware(t *testing.T) {
-	if radarDacUnity != "150" {
-		t.Fatalf("radarDacUnity = %q, want \"150\"", radarDacUnity)
+	if radarDacUnity != "140" {
+		t.Fatalf("radarDacUnity = %q, want \"140\"", radarDacUnity)
 	}
 }
 

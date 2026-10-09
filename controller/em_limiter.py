@@ -81,6 +81,14 @@ DEFAULT_THRESHOLD_DB    = -1.0
 DEFAULT_LOOKAHEAD_MS    = 5.0
 DEFAULT_RELEASE_MS      = 150.0
 
+# Radar's own "Full-band limiter" from its MBCL.cfg ("Radar Tuning V4.5"),
+# read off the owner's own firmware — not these generic defaults, which were
+# never measured against Radar's hardware. There is currently no dashboard
+# control for either value on any board, so applying this per-board (see
+# em_player.py) isn't taking a tuning choice away from anyone.
+RADAR_THRESHOLD_DB = -3.0
+RADAR_RELEASE_MS   = 20.0
+
 # `release_ms` is the time to recover THIS many dB of gain reduction, which
 # is the only way to state a slew rate that means the same thing whether the
 # limiter is pulling 1dB or 12dB. Documented on the dashboard control too.

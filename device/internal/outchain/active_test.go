@@ -74,3 +74,57 @@ func TestActivationResetsState(t *testing.T) {
 		t.Fatal("activation carried state from an inactive period")
 	}
 }
+
+// Pins the measured values against silent drift — same reason
+// controller/tests/test_mbc.py pins em_mbc's and em_limiter.py's own
+// stock-config numbers.
+func TestRadarLimiterMatchesItsOwnMeasuredConfiguration(t *testing.T) {
+	if radarLimiterThresholdDb != -3.0 {
+		t.Errorf("radarLimiterThresholdDb = %g, want -3.0", radarLimiterThresholdDb)
+	}
+	if radarLimiterReleaseMs != 20.0 {
+		t.Errorf("radarLimiterReleaseMs = %g, want 20.0", radarLimiterReleaseMs)
+	}
+}
+
+// Confirms the override actually reaches the limiter, and that it holds
+// even when Params carries a different value — this is a hard override,
+// not a default (see chain.go's apply), so a config push disagreeing with
+// it must not win.
+func TestRadarChainOverridesLimiterRegardlessOfParams(t *testing.T) {
+	c := NewForBoard(48000, "radar")
+	c.SetActive(true)
+	p := DefaultParams()
+	p.LimiterThresholdDb = -1.0 // deliberately NOT Radar's -3.0
+	p.LimiterReleaseMs = 150.0  // deliberately NOT Radar's 20.0
+	c.SetParams(p)
+	c.Process(loud(2048)) // takePending -> apply runs here
+
+	if c.lim.thresholdDb != radarLimiterThresholdDb {
+		t.Errorf("lim.thresholdDb = %g, want %g (Params asked for %g)",
+			c.lim.thresholdDb, radarLimiterThresholdDb, p.LimiterThresholdDb)
+	}
+	if c.lim.releaseMs != radarLimiterReleaseMs {
+		t.Errorf("lim.releaseMs = %g, want %g (Params asked for %g)",
+			c.lim.releaseMs, radarLimiterReleaseMs, p.LimiterReleaseMs)
+	}
+}
+
+// And biscuit must be entirely unaffected — Params wins there, same as
+// before this override existed.
+func TestBiscuitChainUsesParamsLimiterUnmodified(t *testing.T) {
+	c := NewForBoard(48000, "biscuit")
+	c.SetActive(true)
+	p := DefaultParams()
+	p.LimiterThresholdDb = -1.0
+	p.LimiterReleaseMs = 150.0
+	c.SetParams(p)
+	c.Process(loud(2048))
+
+	if c.lim.thresholdDb != -1.0 {
+		t.Errorf("lim.thresholdDb = %g, want -1.0 (biscuit must not be overridden)", c.lim.thresholdDb)
+	}
+	if c.lim.releaseMs != 150.0 {
+		t.Errorf("lim.releaseMs = %g, want 150.0 (biscuit must not be overridden)", c.lim.releaseMs)
+	}
+}

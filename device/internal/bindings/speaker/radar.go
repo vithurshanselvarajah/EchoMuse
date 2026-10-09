@@ -112,13 +112,28 @@ func prepareRadarSpeaker(path string) error {
 // borrowed number nobody had reason to question until the speaker measured
 // quieter than stock at every volume level.
 //
-// 150, not 255: measured directly on hardware (owner's own unit, tinymix
+// 140, not 255: measured directly on hardware (owner's own unit, tinymix
 // 'PCM Playback Volume' <n> while audio played) — clean at 150, still clean
-// one step up at 175 but the device browned out after ~1s, consistent with
-// the test rig's power supply rather than the codec (current draw rising
-// with level, not a codec fault). 150 is the confirmed-clean value; nothing
-// here claims headroom beyond it exists; it most likely does, unverified.
-const radarDacUnity = "150"
+// one step up at 175 but the device browned out after ~1s there,
+// consistent with the test rig's power supply rather than the codec
+// (current draw rising with level, not a codec fault). 140 rather than the
+// full 150 is the owner's own choice once the fix was heard side by side
+// against a stock Echo — see JOURNAL/commit message. Headroom above 150
+// likely exists and is explicitly left unclaimed until it's verified on
+// better-provisioned hardware.
+const radarDacUnity = "140"
+
+// radarDacUnityLevel is radarDacUnity as an int, for the ramp loop below —
+// ONE source for both, deliberately: the loop bound used to be a second,
+// separately-maintained literal ("150"), which is exactly how this value
+// drifted out of sync with itself the first time this was tuned.
+var radarDacUnityLevel = func() int {
+	n, err := strconv.Atoi(radarDacUnity)
+	if err != nil {
+		panic("radarDacUnity must parse as an int: " + err.Error())
+	}
+	return n
+}()
 
 // The measured quiet-start sequence from the Radar bench: clock silence for
 // three seconds at gain zero, release physical mute, wait four seconds, then
@@ -146,7 +161,7 @@ func unmuteRadarSpeaker(wait func(time.Duration) error) (err error) {
 	if err = wait(4 * time.Second); err != nil {
 		return err
 	}
-	for v := 10; v < 150; v += 10 {
+	for v := 10; v < radarDacUnityLevel; v += 10 {
 		if err = mixer.Set(mixer.PlaybackVolume, strconv.Itoa(v)); err != nil {
 			return err
 		}
