@@ -96,34 +96,39 @@ func prepareRadarSpeaker(path string) error {
 	return nil
 }
 
-// radarDacUnity is Radar's own DAC digital-volume baseline — NOT 127, and
-// deliberately not the shared dacUnity constant (pcm_speaker.go), which is
-// biscuit's own measured value and is never reached on this path at all
-// (Init branches to startRadarOutput before dacUnity is ever read).
+// radarDacUnity is Radar's DAC digital-volume baseline: 127, the
+// tlv320aic32x4's 0dB point, which is what stock runs it at. Kept separate
+// from dacUnity (pcm_speaker.go) because Init branches to startRadarOutput
+// before that is read, not because the value differs.
 //
-// 127 was carried over from biscuit on the assumption that this control's
-// "0dB unity" point is the same across both boards' codecs. It is not: on
-// biscuit, indexes above 127 apply positive digital gain to near-full-scale
-// PCM and measurably clip (device/internal/server/volume.go). On Radar,
-// stock firmware runs this exact control permanently at 255 and does all
-// its own volume control in AudioFlinger software instead — confirmed from
-// a Radar unit's own stock audio_policy_configuration.xml and
-// default_volume_tables.xml — so 127 was never Radar's unity point, just a
-// borrowed number nobody had reason to question until the speaker measured
-// quieter than stock at every volume level.
+// It was 150, then 140, then 145 (38a874d, 8d33d2b, 292b168), and the
+// reasoning behind that was wrong in two places, both checkable in
+// device/tools/radar_dump:
 //
-// 145, not 255: measured directly on hardware (owner's own unit, tinymix
-// 'PCM Playback Volume' <n> while audio played) — clean at 150, still clean
-// one step up at 175 but the device browned out after ~1s there,
-// consistent with the test rig's power supply rather than the codec
-// (current draw rising with level, not a codec fault). 145 is the owner's
-// own choice, by ear against a stock Echo side by side: 140 (an earlier
-// deliberately-conservative pick) sounded too quiet once compared
-// properly, 148 overshot it back the other way, and 145 is where it
-// settled. 150 itself was fine but left no margin at all under the 175
-// brownout. Headroom above 150 likely exists and is explicitly left
-// unclaimed until it's verified on better-provisioned hardware.
-const radarDacUnity = "145"
+//   - Radar's playback DAC is NOT a different chip. It is the same
+//     tlv320aic32x4 as biscuit (2-0018), whose "PCM Playback Volume" runs
+//     0..175 in 0.5dB steps with 0dB at 127 — 175 being the control's
+//     maximum is also why that was where the bench "browned out".
+//   - Stock does NOT run it at 255. 255 appears only in mixer_paths.xml,
+//     a generic MediaTek file whose other controls (Audio Amp Playback
+//     Volume, LINEOUT Mux, HPOUT Mux, I2S O03_O04 Switch, AIF TX Mux) do
+//     not exist on this codec at all, and 255 is outside the control's
+//     range. The HAL's real file, audio_device.xml, never writes it, and
+//     the stock tinymix dump reads 127 127. Stock attenuates in
+//     AudioFlinger and leaves the DAC at its reset 0dB, exactly as on
+//     biscuit (device/CLAUDE.md, volume section).
+//
+// 145 still sounded right by ear because it was making up for gain the
+// output chain did not have yet: MBCL's +4dB system gain and band 3/4's
+// +3dB trims (8239c66), OutputTrim's +3dB and ParametricEQ (f21b20f), and
+// the volume-matched EQ file (EQ_100 is 2dB hotter at 1kHz than EQ_50).
+// With those ported, the chain's output measured 8-13dB hotter in RMS than
+// the chain 145 was tuned against, peaks reach 0dBFS at full volume, and
+// 145 would add +9dB on top INSIDE the DAC — where biscuit measured THD of
+// 65% at 153 on near-full-scale input. Any level difference against a
+// stock Echo from here belongs in the chain, which is in software and
+// measurable, never in DAC gain above 0dB.
+const radarDacUnity = "127"
 
 // radarDacUnityLevel is radarDacUnity as an int, for the ramp loop below —
 // ONE source for both, deliberately: the loop bound used to be a second,

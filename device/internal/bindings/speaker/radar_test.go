@@ -11,13 +11,13 @@ import (
 	"github.com/wilbowes/EchoMuse/internal/bindings/mixer"
 )
 
-// Pins the measured value against silent drift — same reason
-// controller/tests/test_mbc.py pins em_mbc's stock-config numbers. Change
-// this only with a fresh measurement on real hardware to back it up; see
-// the constant's own doc comment for how this one was obtained.
-func TestRadarDacUnityMatchesWhatWasMeasuredOnHardware(t *testing.T) {
-	if radarDacUnity != "145" {
-		t.Fatalf("radarDacUnity = %q, want \"145\"", radarDacUnity)
+// Pins the DAC at the codec's 0dB, where stock leaves it — see the
+// constant's doc comment. Above 127 this control adds digital gain to a
+// chain whose limiter already puts peaks at full scale, which clips inside
+// the DAC; a loudness difference belongs in the output chain instead.
+func TestRadarDacUnityIsTheCodecsZeroDB(t *testing.T) {
+	if radarDacUnity != "127" {
+		t.Fatalf("radarDacUnity = %q, want \"127\"", radarDacUnity)
 	}
 }
 
