@@ -18,6 +18,12 @@ type Params struct {
 	LimiterEnabled     bool
 	LimiterThresholdDb float64
 	LimiterReleaseMs   float64
+	// StockCurve runs Radar's own stock FIR EQ (eqFIR) ahead of the 8 bands
+	// above, additively — see controller/em_eq.py's stock_curve. Has no
+	// effect at all on a board without a loaded curve (only Radar, and
+	// only when the embedded taps parsed), same as the controller leaving
+	// it unused for every other board.
+	StockCurve bool
 }
 
 // DefaultParams mirrors the controller's defaults, so a device that has not
@@ -91,6 +97,14 @@ type Chain struct {
 	lim     *limiter
 	idle    bool // state is all zero and input is silence
 	running bool // active on the previous period
+
+	// Stock FIR curve (Radar only — nil taps on every other board, and
+	// newEQFIR(nil, ...) is nil, so fir stays nil there with no extra
+	// gating needed at this level).
+	firTaps  []float64 // resolved once at construction; nil = unavailable
+	fir      *eqFIR    // lazily sized to the first period's length
+	wantFIR  bool      // params.StockCurve as of the last apply()
+	firScratch []float64 // reused per period — no per-call allocation
 }
 
 // New builds a chain at the given sample rate, inactive, with DefaultParams,
@@ -102,8 +116,10 @@ func New(sampleRate int) *Chain {
 
 // NewForBoard builds a chain at the given sample rate, inactive, with
 // DefaultParams, with the bass guard tuned for boardID (pkg/board.IDOf) —
-// see bassGuardTuning. Only the guard varies by board; the EQ and limiter
-// are not board-specific.
+// see bassGuardTuning. The guard always varies by board; the stock FIR
+// curve is only ever available on "radar" (nil firTaps on every other
+// board id, so StockCurve has no effect there regardless of config). The
+// EQ bands and limiter are not board-specific.
 func NewForBoard(sampleRate int, boardID string) *Chain {
 	fs := float64(sampleRate)
 	c := &Chain{
@@ -112,6 +128,9 @@ func NewForBoard(sampleRate int, boardID string) *Chain {
 		guard: newBassGuard(fs, boardID),
 		lim:   newLimiter(fs),
 		idle:  true,
+	}
+	if boardID == "radar" {
+		c.firTaps = loadRadarEQTaps()
 	}
 	c.apply(DefaultParams())
 	return c
@@ -141,6 +160,11 @@ func (c *Chain) apply(p Params) {
 	c.guard.floorDb = math.Min(p.GuardDb, 0)
 	c.lim.enabled = p.LimiterEnabled
 	c.lim.setParams(p.LimiterThresholdDb, p.LimiterReleaseMs, c.fs)
+	// Actually turning the FIR on/off is deferred to Process, which is the
+	// only place that knows this period's frame count (needed to size it)
+	// — apply only records what is WANTED. No effect at all when firTaps
+	// is nil (every board but Radar).
+	c.wantFIR = p.StockCurve && c.firTaps != nil
 }
 
 // takePending applies a queued SetParams. Returns the params that are now in
@@ -186,6 +210,31 @@ func (c *Chain) Process(buf []byte) (applied *Params) {
 	}
 
 	frames := len(buf) / 4
+
+	// FIR on/off is decided in apply(), but SIZED here — this is the first
+	// point the chain knows the period's frame count. In production this
+	// never changes between calls, so sizing happens once; a device that
+	// somehow called Process with a varying frames count would panic
+	// inside eqFIR.process, which is the right failure for that bug
+	// rather than a wrong answer.
+	if c.wantFIR && c.fir == nil {
+		c.fir = newEQFIR(c.firTaps, frames)
+		if c.firScratch == nil || len(c.firScratch) != frames {
+			c.firScratch = make([]float64, frames)
+		}
+	} else if !c.wantFIR && c.fir != nil {
+		c.fir = nil
+	}
+	if c.fir != nil {
+		for i := 0; i < frames; i++ {
+			off := i * 4
+			l := int16(uint16(buf[off]) | uint16(buf[off+1])<<8)
+			r := int16(uint16(buf[off+2]) | uint16(buf[off+3])<<8)
+			c.firScratch[i] = (float64(l) + float64(r)) / 2
+		}
+		copy(c.firScratch, c.fir.process(c.firScratch))
+	}
+
 	silentIn, silentOut := true, true
 	for i := 0; i < frames; i++ {
 		off := i * 4
@@ -194,7 +243,15 @@ func (c *Chain) Process(buf []byte) (applied *Params) {
 		if l != 0 || r != 0 {
 			silentIn = false
 		}
-		x := (float64(l) + float64(r)) / 2
+		var x float64
+		if c.fir != nil {
+			// Radar's stock curve, layered ahead of the bands below —
+			// additive with them, same as controller/em_eq.py's
+			// StreamingEQ(stock_curve=True), never a replacement.
+			x = c.firScratch[i]
+		} else {
+			x = (float64(l) + float64(r)) / 2
+		}
 
 		x = c.eq.step(x)
 		x = c.guard.step(x)
@@ -232,6 +289,9 @@ func (c *Chain) reset() {
 	c.eq.reset()
 	c.guard.reset()
 	c.lim.reset()
+	if c.fir != nil {
+		c.fir.reset()
+	}
 	c.idle = true
 }
 

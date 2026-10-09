@@ -23,7 +23,8 @@
      "guardDb": -30.0,
      "limiterEnabled": true,
      "limiterThreshold": -1.0,
-     "limiterRelease": 150.0
+     "limiterRelease": 150.0,
+     "stockCurve": false
     }
    ]
   ],
@@ -58,7 +59,8 @@
      "guardDb": -30.0,
      "limiterEnabled": true,
      "limiterThreshold": -1.0,
-     "limiterRelease": 150.0
+     "limiterRelease": 150.0,
+     "stockCurve": false
     }
    ]
   ],
@@ -93,7 +95,8 @@
      "guardDb": -30.0,
      "limiterEnabled": false,
      "limiterThreshold": -1.0,
-     "limiterRelease": 150.0
+     "limiterRelease": 150.0,
+     "stockCurve": false
     }
    ]
   ],
@@ -128,7 +131,8 @@
      "guardDb": -30.0,
      "limiterEnabled": true,
      "limiterThreshold": -6.0,
-     "limiterRelease": 40.0
+     "limiterRelease": 40.0,
+     "stockCurve": false
     }
    ]
   ],
@@ -163,7 +167,8 @@
      "guardDb": -30.0,
      "limiterEnabled": false,
      "limiterThreshold": -1.0,
-     "limiterRelease": 150.0
+     "limiterRelease": 150.0,
+     "stockCurve": false
     }
    ]
   ],
@@ -198,7 +203,8 @@
      "guardDb": -30.0,
      "limiterEnabled": true,
      "limiterThreshold": -1.0,
-     "limiterRelease": 150.0
+     "limiterRelease": 150.0,
+     "stockCurve": false
     }
    ]
   ],
@@ -233,7 +239,8 @@
      "guardDb": -30.0,
      "limiterEnabled": true,
      "limiterThreshold": -12.0,
-     "limiterRelease": 150.0
+     "limiterRelease": 150.0,
+     "stockCurve": false
     }
    ],
    [
@@ -254,7 +261,8 @@
      "guardDb": -30.0,
      "limiterEnabled": false,
      "limiterThreshold": -12.0,
-     "limiterRelease": 150.0
+     "limiterRelease": 150.0,
+     "stockCurve": false
     }
    ],
    [
@@ -275,7 +283,8 @@
      "guardDb": -30.0,
      "limiterEnabled": true,
      "limiterThreshold": 0.0,
-     "limiterRelease": 150.0
+     "limiterRelease": 150.0,
+     "stockCurve": false
     }
    ]
   ],
@@ -310,7 +319,8 @@
      "guardDb": -30.0,
      "limiterEnabled": true,
      "limiterThreshold": -1.0,
-     "limiterRelease": 150.0
+     "limiterRelease": 150.0,
+     "stockCurve": false
     }
    ],
    [
@@ -331,7 +341,8 @@
      "guardDb": -30.0,
      "limiterEnabled": true,
      "limiterThreshold": -1.0,
-     "limiterRelease": 150.0
+     "limiterRelease": 150.0,
+     "stockCurve": false
     }
    ],
    [
@@ -352,7 +363,8 @@
      "guardDb": -30.0,
      "limiterEnabled": false,
      "limiterThreshold": -1.0,
-     "limiterRelease": 150.0
+     "limiterRelease": 150.0,
+     "stockCurve": false
     }
    ],
    [
@@ -373,7 +385,8 @@
      "guardDb": -30.0,
      "limiterEnabled": true,
      "limiterThreshold": -8.0,
-     "limiterRelease": 150.0
+     "limiterRelease": 150.0,
+     "stockCurve": false
     }
    ],
    [
@@ -394,7 +407,8 @@
      "guardDb": -10.0,
      "limiterEnabled": true,
      "limiterThreshold": -8.0,
-     "limiterRelease": 150.0
+     "limiterRelease": 150.0,
+     "stockCurve": false
     }
    ],
    [
@@ -415,7 +429,8 @@
      "guardDb": -10.0,
      "limiterEnabled": true,
      "limiterThreshold": -8.0,
-     "limiterRelease": 150.0
+     "limiterRelease": 150.0,
+     "stockCurve": false
     }
    ],
    [
@@ -436,7 +451,8 @@
      "guardDb": -10.0,
      "limiterEnabled": true,
      "limiterThreshold": -8.0,
-     "limiterRelease": 600.0
+     "limiterRelease": 600.0,
+     "stockCurve": false
     }
    ],
    [
@@ -457,7 +473,8 @@
      "guardDb": -10.0,
      "limiterEnabled": true,
      "limiterThreshold": -8.0,
-     "limiterRelease": 600.0
+     "limiterRelease": 600.0,
+     "stockCurve": false
     }
    ],
    [
@@ -478,7 +495,8 @@
      "guardDb": -10.0,
      "limiterEnabled": true,
      "limiterThreshold": -8.0,
-     "limiterRelease": 600.0
+     "limiterRelease": 600.0,
+     "stockCurve": false
     }
    ]
   ],
@@ -513,7 +531,8 @@
      "guardDb": -30.0,
      "limiterEnabled": true,
      "limiterThreshold": -1.0,
-     "limiterRelease": 150.0
+     "limiterRelease": 150.0,
+     "stockCurve": false
     }
    ],
    [
@@ -534,13 +553,73 @@
      "guardDb": -15.0,
      "limiterEnabled": true,
      "limiterThreshold": -1.0,
-     "limiterRelease": 150.0
+     "limiterRelease": 150.0,
+     "stockCurve": false
     }
    ]
   ],
   "stats": {
    "guardReductionDb": 14.322276410741477,
    "limiterReductionDb": 2.881916475779737,
+   "clipped": 0,
+   "clippedBypassed": 0
+  },
+  "board": "radar"
+ },
+ {
+  "name": "radar_stock_curve",
+  "chunk": 2048,
+  "sampleRate": 48000,
+  "chunks": 6,
+  "schedule": [
+   [
+    0,
+    {
+     "bands": [
+      3.0,
+      -2.0,
+      0,
+      0,
+      0,
+      1.0,
+      0,
+      -1.0
+     ],
+     "loudness": false,
+     "guardEnabled": true,
+     "guardDb": -30.0,
+     "limiterEnabled": true,
+     "limiterThreshold": -1.0,
+     "limiterRelease": 150.0,
+     "stockCurve": true
+    }
+   ],
+   [
+    3,
+    {
+     "bands": [
+      3.0,
+      -2.0,
+      0,
+      0,
+      0,
+      1.0,
+      0,
+      -1.0
+     ],
+     "loudness": false,
+     "guardEnabled": true,
+     "guardDb": -12.0,
+     "limiterEnabled": true,
+     "limiterThreshold": -1.0,
+     "limiterRelease": 150.0,
+     "stockCurve": true
+    }
+   ]
+  ],
+  "stats": {
+   "guardReductionDb": 30.0,
+   "limiterReductionDb": 10.115874638864721,
    "clipped": 0,
    "clippedBypassed": 0
   },

@@ -698,6 +698,8 @@ class MediaSession:
         else:
             guard_crossover_hz, guard_threshold_db = em_mbc._tuning_for(device.board_id)
             eq = em_eq.StreamingEQ(SPEAKER_RATE, device.eq_bands, device.eq_loudness,
+                                   stock_curve=(device.eq_stock_curve
+                                                and device.board_id == "radar"),
                                    limiter=em_limiter.Limiter(
                                        SPEAKER_RATE,
                                        threshold_db=device.limiter_threshold,

@@ -26,7 +26,9 @@ Usage:
     eq_pcm = em_eq.apply(voice_response, SPEAKER_RATE, bands=[0]*8, loudness=False)
 """
 
+import json
 import math
+import os
 import logging
 import numpy as np
 from scipy.signal import sosfilt
@@ -90,6 +92,108 @@ def _hishelf_sos(fc: float, gain_db: float, fs: float) -> np.ndarray:
 def _loudness_sos(fs: float) -> np.ndarray:
     """Speech-range presence boost for lower listening volumes."""
     return _peak_sos(2500, 5.0, 0.8, fs)
+
+
+# ─── Stock FIR curve (Radar only) ──────────────────────────────────────────────
+#
+# Radar's stock speaker EQ (EQ_50.cfg) is a 2048-tap FIR, not an 8-band
+# parametric curve — a fundamentally different filter shape the 8 sliders
+# above cannot reproduce (measured: the real curve swings from +10dB at
+# 80Hz to -9dB at 200Hz, and -5dB at 2.5kHz to +3dB at 3.15kHz — both
+# transitions narrower than a Q=1.4 band at any of the 8 fixed frequencies
+# can track). This runs it directly via overlap-save rather than
+# approximating it.
+#
+# Extracted from the owner's own Radar firmware (NS6572/6436), for that
+# owner's personal build only — see JOURNAL/commit message for why this is
+# not something to carry into a PR: Amazon's exact filter coefficients are
+# not something this project otherwise redistributes.
+_RADAR_EQ_TAPS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                   "radar_eq_taps.json")
+_radar_eq_taps_cache: np.ndarray | None = None
+
+
+def _radar_eq_taps() -> np.ndarray | None:
+    """The Radar FIR's coefficients, loaded once. None if the data file
+    is not present — this file is deliberately not required for every
+    install, only for a build that wants the stock_curve option."""
+    global _radar_eq_taps_cache
+    if _radar_eq_taps_cache is None:
+        try:
+            with open(_RADAR_EQ_TAPS_PATH) as f:
+                data = json.load(f)
+            _radar_eq_taps_cache = np.asarray(data["taps"], dtype=np.float64)
+        except FileNotFoundError:
+            return None
+    return _radar_eq_taps_cache
+
+
+def _next_pow2(n: int) -> int:
+    return 1 << (n - 1).bit_length()
+
+
+class _OverlapSaveFIR:
+    """
+    Streaming FIR convolution via overlap-save, FFT-based.
+
+    Unlike StreamingEQ's biquads (which carry state sample-by-sample and
+    accept any chunk size for free), a direct per-sample FIR convolution of
+    a filter this long (2048 taps) costs O(chunk_len * 2048) — about 100x
+    the cost of the whole existing 8-biquad chain, measured against the
+    device's own budget in device/CLAUDE.md. FFT-based overlap-save turns
+    that into O(N log N) per chunk, N being the FFT size (next_pow2 of the
+    chunk plus the filter's own history), making it cheap enough to run per
+    period on hardware built for 13 biquads, not a 2048-tap filter.
+
+    Output length always equals input length, per call, matching
+    StreamingEQ.process's contract — there is no internal buffering, no
+    accumulated latency beyond the filter's own fixed group delay (the same
+    group delay direct convolution would have; FFT changes only HOW it is
+    computed, not what it computes), and no silent gaps or bursts in what a
+    caller gets back.
+
+    The overlap is the last (M-1) RAW INPUT samples seen, carried across
+    calls regardless of how each call's chunk size compares to M — a call
+    shorter than M-1 is handled the same way as one much longer than it.
+    """
+
+    def __init__(self, taps: np.ndarray):
+        self._h = np.asarray(taps, dtype=np.float64)
+        self._m = self._h.size
+        self._overlap = np.zeros(self._m - 1, dtype=np.float64)
+        self._h_fft_cache: dict[int, np.ndarray] = {}
+
+    def _h_fft(self, n: int) -> np.ndarray:
+        v = self._h_fft_cache.get(n)
+        if v is None:
+            # Cached per distinct FFT size seen — the filter itself never
+            # changes, so its transform is only ever recomputed when a
+            # caller's chunk length changes the required FFT size.
+            v = np.fft.rfft(self._h, n=n)
+            self._h_fft_cache[n] = v
+        return v
+
+    def reset(self) -> None:
+        """Zero the carried history — for a mode switch, not a parameter
+        change: this filter has no tunable parameters to carry state
+        through."""
+        self._overlap[:] = 0.0
+
+    def process(self, x: np.ndarray) -> np.ndarray:
+        if x.size == 0:
+            return x
+        ext = np.concatenate([self._overlap, x])
+        n = _next_pow2(ext.size)
+        y = np.fft.irfft(np.fft.rfft(ext, n=n) * self._h_fft(n), n=n)
+        # The first (m-1) samples of a length-n circular convolution of an
+        # (m-1+L)-sample signal against an m-tap filter are corrupted by
+        # wraparound; the next L are the exact linear-convolution result for
+        # this call's new samples (see commit message/JOURNAL for the proof
+        # — it holds for any n >= len(ext), not only n == len(ext), which is
+        # what lets this use a cheap next_pow2 rather than a tight bound).
+        out = y[self._m - 1: self._m - 1 + x.size]
+        self._overlap = ext[-(self._m - 1):].copy()
+        return out
 
 
 # ─── Public API ───────────────────────────────────────────────────────────────
@@ -181,10 +285,25 @@ class StreamingEQ:
     def __init__(self, sample_rate: int, bands: list | None = None,
                  loudness: bool = False,
                  limiter: "em_limiter.Limiter | None" = None,
-                 guard: "em_mbc.BassGuard | None" = None):
+                 guard: "em_mbc.BassGuard | None" = None,
+                 stock_curve: bool = False):
         self._limiter = limiter
         self._guard = guard
         self._sample_rate = int(sample_rate)   # set_bands rebuilds against it
+
+        # Structural, like limiter/guard above: fixed for this feed, not
+        # something update() can flip mid-stream — a config change here
+        # takes effect on the NEXT feed, the same way output_chain_on_device
+        # already decides eq/Passthrough once per feed rather than live.
+        # Additive with the 8-band EQ below, not a replacement for it: the
+        # curve is Radar's stock tonal correction, bands are still free to
+        # shape further on top of it.
+        taps = _radar_eq_taps() if stock_curve else None
+        if stock_curve and taps is None:
+            log.warning("[eq] stock_curve requested but radar_eq_taps.json "
+                        "is missing — falling back to the 8-band EQ alone")
+        self._fir = _OverlapSaveFIR(taps) if taps is not None else None
+
         # Last values update() applied; None until it is first called, so the
         # first call always lands rather than matching a coincidental default.
         self._applied = None
@@ -283,9 +402,11 @@ class StreamingEQ:
 
     def process(self, pcm: bytes) -> bytes:
         if len(pcm) < 2 or (self._sos is None and self._limiter is None
-                            and self._guard is None):
+                            and self._guard is None and self._fir is None):
             return pcm
         samples = np.frombuffer(pcm, dtype=np.int16).astype(np.float64)
+        if self._fir is not None:
+            samples = self._fir.process(samples)
         if self._sos is not None:
             samples, self._zi = sosfilt(self._sos, samples, zi=self._zi)
         if self._guard is not None:

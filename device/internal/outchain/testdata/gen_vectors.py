@@ -38,6 +38,7 @@ DEFAULTS = {
     "bands": [0.0] * 8, "loudness": False,
     "guardEnabled": True, "guardDb": -30.0,
     "limiterEnabled": True, "limiterThreshold": -1.0, "limiterRelease": 150.0,
+    "stockCurve": False,
 }
 
 
@@ -117,6 +118,19 @@ CASES = [
     {"name": "radar_board", "signal": "speechlike", "chunks": 6, "seed": 9,
      "board": "radar",
      "schedule": [[0, {}], [3, {"guardDb": -15.0}]]},
+    # Radar's stock FIR curve, layered under a shaped 8-band EQ — the full
+    # combination the dashboard actually exposes (Config → Playback →
+    # "Radar's own stock EQ curve" + bands still free to move). stockCurve
+    # is construction-only in StreamingEQ (see its docstring), so unlike
+    # every other case it must not appear in any schedule delta — only at
+    # chunk 0. sweep exercises the FIR's actual shape across the band it
+    # measurably differs in (steep transitions the biquads cannot match),
+    # which speechlike's narrower spectrum would mostly miss.
+    {"name": "radar_stock_curve", "signal": "sweep", "chunks": 6, "seed": 10,
+     "board": "radar",
+     "schedule": [[0, {"stockCurve": True, "bands": [3.0, -2.0, 0, 0, 0, 1.0, 0, -1.0]}],
+                  [3, {"stockCurve": True, "bands": [3.0, -2.0, 0, 0, 0, 1.0, 0, -1.0],
+                       "guardDb": -12.0}]]},
 ]
 
 
@@ -142,7 +156,8 @@ def render(case):
                              crossover_hz=crossover_hz,
                              threshold_db=threshold_db)
     chain = em_eq.StreamingEQ(FS, p0["bands"], p0["loudness"],
-                              limiter=lim, guard=guard)
+                              limiter=lim, guard=guard,
+                              stock_curve=p0.get("stockCurve", False))
     out = []
     for c in range(case["chunks"]):
         p = _params_at(case["schedule"], c)

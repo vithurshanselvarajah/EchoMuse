@@ -66,6 +66,7 @@ KINDS: dict[str, str] = {
     "volumeButtonSound": BOOL,
     "eqBands": FLOAT_LIST,
     "eqLoudness": BOOL,
+    "eqStockCurve": BOOL,
     "bassGuardEnabled": BOOL,
     "bassGuardDb": FLOAT,
     "limiterEnabled": BOOL,

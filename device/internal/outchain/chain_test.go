@@ -20,6 +20,7 @@ type vectorParams struct {
 	LimiterEnabled   bool      `json:"limiterEnabled"`
 	LimiterThreshold float64   `json:"limiterThreshold"`
 	LimiterRelease   float64   `json:"limiterRelease"`
+	StockCurve       bool      `json:"stockCurve"`
 }
 
 func (v vectorParams) params() Params {
@@ -30,6 +31,7 @@ func (v vectorParams) params() Params {
 		LimiterEnabled:     v.LimiterEnabled,
 		LimiterThresholdDb: v.LimiterThreshold,
 		LimiterReleaseMs:   v.LimiterRelease,
+		StockCurve:         v.StockCurve,
 	}
 	copy(p.Bands[:], v.Bands)
 	return p
