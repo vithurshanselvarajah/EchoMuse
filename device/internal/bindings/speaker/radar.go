@@ -112,16 +112,18 @@ func prepareRadarSpeaker(path string) error {
 // borrowed number nobody had reason to question until the speaker measured
 // quieter than stock at every volume level.
 //
-// 140, not 255: measured directly on hardware (owner's own unit, tinymix
+// 145, not 255: measured directly on hardware (owner's own unit, tinymix
 // 'PCM Playback Volume' <n> while audio played) — clean at 150, still clean
 // one step up at 175 but the device browned out after ~1s there,
 // consistent with the test rig's power supply rather than the codec
-// (current draw rising with level, not a codec fault). 140 rather than the
-// full 150 is the owner's own choice once the fix was heard side by side
-// against a stock Echo — see JOURNAL/commit message. Headroom above 150
-// likely exists and is explicitly left unclaimed until it's verified on
-// better-provisioned hardware.
-const radarDacUnity = "140"
+// (current draw rising with level, not a codec fault). 145 is the owner's
+// own choice, by ear against a stock Echo side by side: 140 (an earlier
+// deliberately-conservative pick) sounded too quiet once compared
+// properly, 148 overshot it back the other way, and 145 is where it
+// settled. 150 itself was fine but left no margin at all under the 175
+// brownout. Headroom above 150 likely exists and is explicitly left
+// unclaimed until it's verified on better-provisioned hardware.
+const radarDacUnity = "145"
 
 // radarDacUnityLevel is radarDacUnity as an int, for the ramp loop below —
 // ONE source for both, deliberately: the loop bound used to be a second,
