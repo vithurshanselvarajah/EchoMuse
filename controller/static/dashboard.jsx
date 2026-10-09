@@ -2468,6 +2468,7 @@ function Detail({ device, token, onClose, onApprove, isAdmin, globalConfig, onDe
                 holdCapable={!device.connected || !!device.buttonHoldCapable}
                 hwEchoRef={device.connected && device.aecRef === 'hw'}
                 hwRefCapable={!device.connected || !!device.aecHwRefCapable}
+                radarCapable={device.connected && device.boardId === 'radar'}
                 onScopeChange={(id, local) => {
                   setSections(prev => local
                     ? [...prev, id]
@@ -9400,7 +9401,14 @@ function DeviceConfigForm({ config, onChange, disabled, sections, onScopeChange,
                             emosFleet = true, wakeCueCapable = true,
                             volumeCueCapable = true, sendspinCapable = true,
                             sendspinPanel = null, bleConnectCapable = true,
-                            blePanel = null }) {
+                            blePanel = null, radarCapable = false }) {
+  // radarCapable defaults FALSE, unlike its neighbours above defaulting
+  // true: those gate a FIRMWARE capability, where "unknown" should not
+  // hide a control someone may be mid-setup for. Board identity is
+  // different — it is reported live only, never persisted (em_api.py), so
+  // "unknown" here genuinely means "could be any board", and showing a
+  // Radar-only control on the strength of not knowing is the "appears to
+  // work" failure this project's own controls are held to elsewhere.
   // emosFleet defaults TRUE for the same reason the capability props above do,
   // and for one more: it gates the console password, which is emOS-only, and
   // disabling a setting because we do not KNOW the fleet has an emOS device
@@ -9623,7 +9631,7 @@ function DeviceConfigForm({ config, onChange, disabled, sections, onScopeChange,
             <div style={inputStyle}>
               <Toggle label="Speech boost" sub="presence boost for voice" value={config.eqLoudness ?? false} onChange={v => set('eqLoudness', v)}/>
             </div>
-            {device.boardId === 'radar' && (
+            {radarCapable && (
               <div style={{ marginTop: 8, ...inputStyle }}>
                 <Toggle label="Radar's own stock EQ curve"
                   sub="Amazon's real tuning for this speaker, layered under the bands above"
