@@ -85,6 +85,24 @@ func lowShelf(fc, gainDb, fs float64) biquad {
 	)
 }
 
+// lowShelfQ is the shelf with an explicit Q (alpha = sin(w0)/(2Q)), the form
+// ParametricEQ.cfg states its shelf in. lowShelf above is the S=1 case.
+func lowShelfQ(fc, gainDb, q, fs float64) biquad {
+	A := math.Pow(10, gainDb/40)
+	w0 := 2 * math.Pi * fc / fs
+	cw := math.Cos(w0)
+	sqA := math.Sqrt(A)
+	alpha := math.Sin(w0) / (2 * q)
+	return norm(
+		A*((A+1)-(A-1)*cw+2*sqA*alpha),
+		2*A*((A-1)-(A+1)*cw),
+		A*((A+1)-(A-1)*cw-2*sqA*alpha),
+		(A+1)+(A-1)*cw+2*sqA*alpha,
+		-2*((A-1)+(A+1)*cw),
+		(A+1)+(A-1)*cw-2*sqA*alpha,
+	)
+}
+
 func highShelf(fc, gainDb, fs float64) biquad {
 	A := math.Pow(10, gainDb/40)
 	w0 := 2 * math.Pi * fc / fs

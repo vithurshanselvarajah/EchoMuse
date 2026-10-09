@@ -8,6 +8,17 @@ import (
 	"sync/atomic"
 )
 
+// Radar's ParametricEQ.cfg ("EQv5.4") and OutputTrim, from its own vendor
+// files. AFE.cfg's Playback.Algorithms runs EQ (FIR) -> ParametricEQ -> MBCL
+// -> OutputTrim, so both ride StockCurve with the FIR, in that order. Only
+// the cfg's first two biquads are not BYPASS; both state Q=0.9. Mirrors
+// controller/em_eq.py's RADAR_PEQ_* / RADAR_OUTPUT_TRIM_DB.
+const (
+	radarPEQShelfFc, radarPEQShelfDb, radarPEQShelfQ = 150.0, 5.0, 0.9
+	radarPEQPeakFc, radarPEQPeakDb, radarPEQPeakQ    = 80.0, 2.0, 0.9
+	radarOutputTrimDb                                = 3.0
+)
+
 // Params is the chain's whole configuration. Defaults match
 // em_db.DEFAULT_DEVICE_CONFIG.
 type Params struct {
@@ -123,6 +134,11 @@ type Chain struct {
 	fir      *eqFIR    // lazily sized to the first period's length
 	wantFIR  bool      // params.StockCurve as of the last apply()
 	firScratch []float64 // reused per period — no per-call allocation
+
+	// ParametricEQ and OutputTrim: present with the FIR (Radar), run only
+	// while it does. See the radarPEQ* constants.
+	peq      []biquad
+	trimGain float64
 }
 
 // New builds a chain at the given sample rate, inactive, with DefaultParams,
@@ -159,6 +175,13 @@ func NewForBoard(sampleRate int, boardID string) *Chain {
 	}
 	if boardID == "radar" {
 		c.firTaps = loadRadarEQTaps()
+		if c.firTaps != nil {
+			c.peq = []biquad{
+				lowShelfQ(radarPEQShelfFc, radarPEQShelfDb, radarPEQShelfQ, fs),
+				peaking(radarPEQPeakFc, radarPEQPeakDb, radarPEQPeakQ, fs),
+			}
+			c.trimGain = dbToGain(radarOutputTrimDb)
+		}
 	}
 	c.apply(DefaultParams())
 	return c
@@ -281,6 +304,9 @@ func (c *Chain) Process(buf []byte) (applied *Params) {
 			// additive with them, same as controller/em_eq.py's
 			// StreamingEQ(stock_curve=True), never a replacement.
 			x = c.firScratch[i]
+			for j := range c.peq {
+				x = c.peq[j].step(x)
+			}
 		} else {
 			x = (float64(l) + float64(r)) / 2
 		}
@@ -288,6 +314,9 @@ func (c *Chain) Process(buf []byte) (applied *Params) {
 		x = c.eq.step(x)
 		x = c.guard.step(x)
 		x = c.lim.step(x)
+		if c.fir != nil {
+			x *= c.trimGain // OutputTrim: after MBCL's limiter, as in AFE.cfg
+		}
 
 		// Backstop, then truncation toward zero — np.clip(...).astype(int16)
 		// in the reference.
@@ -323,6 +352,9 @@ func (c *Chain) reset() {
 	c.lim.reset()
 	if c.fir != nil {
 		c.fir.reset()
+	}
+	for i := range c.peq {
+		c.peq[i].reset()
 	}
 	c.idle = true
 }

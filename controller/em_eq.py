@@ -89,6 +89,25 @@ def _hishelf_sos(fc: float, gain_db: float, fs: float) -> np.ndarray:
     return np.array([[b0/a0, b1/a0, b2/a0, 1.0, a1/a0, a2/a0]])
 
 
+def _loshelf_q_sos(fc: float, gain_db: float, Q: float, fs: float) -> np.ndarray:
+    """Low shelf biquad with an explicit Q (Audio EQ Cookbook,
+    alpha = sin(w0)/(2Q)) — the form ParametricEQ.cfg states its shelf in.
+    _loshelf_sos above is the S=1 special case, kept as it is so the 8-band
+    EQ's vectors do not move."""
+    A     = 10 ** (gain_db / 40.0)
+    w0    = 2 * math.pi * fc / fs
+    cw    = math.cos(w0)
+    sqA   = math.sqrt(A)
+    alpha = math.sin(w0) / (2 * Q)
+    b0 =      A * ((A+1) - (A-1)*cw + 2*sqA*alpha)
+    b1 =  2 * A * ((A-1) - (A+1)*cw)
+    b2 =      A * ((A+1) - (A-1)*cw - 2*sqA*alpha)
+    a0 =           (A+1) + (A-1)*cw + 2*sqA*alpha
+    a1 =     -2 * ((A-1) + (A+1)*cw)
+    a2 =           (A+1) + (A-1)*cw - 2*sqA*alpha
+    return np.array([[b0/a0, b1/a0, b2/a0, 1.0, a1/a0, a2/a0]])
+
+
 def _loudness_sos(fs: float) -> np.ndarray:
     """Speech-range presence boost for lower listening volumes."""
     return _peak_sos(2500, 5.0, 0.8, fs)
@@ -108,6 +127,23 @@ def _loudness_sos(fs: float) -> np.ndarray:
 # owner's personal build only — see JOURNAL/commit message for why this is
 # not something to carry into a PR: Amazon's exact filter coefficients are
 # not something this project otherwise redistributes.
+# Radar's ParametricEQ.cfg ("EQv5.4") and OutputTrim, read off the unit's
+# own /system/vendor/etc/audio-algorithms/ and AFE.cfg. AFE.cfg's
+# Playback.Algorithms runs them as  EQ (FIR) -> ParametricEQ -> MBCL ->
+# OutputTrim, so they ride the same stock_curve switch as the FIR: they are
+# the same tuning, and the FIR alone is not what stock sounds like. Of the
+# cfg's 8 biquads only the first two are not BYPASS. Both state Q=0.9.
+RADAR_PEQ_LOW_SHELF = (150.0, 5.0, 0.9)    # Fc Hz, GaindB, Q
+RADAR_PEQ_PEAK      = (80.0, 2.0, 0.9)
+RADAR_OUTPUT_TRIM_DB = 3.0                 # flat gain after MBCL's limiter
+
+
+def radar_peq_sos(fs: float) -> np.ndarray:
+    return np.vstack([_loshelf_q_sos(*RADAR_PEQ_LOW_SHELF, fs),
+                      _peak_sos(RADAR_PEQ_PEAK[0], RADAR_PEQ_PEAK[1],
+                                RADAR_PEQ_PEAK[2], fs)])
+
+
 _RADAR_EQ_TAPS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                    "radar_eq_taps.json")
 _radar_eq_taps_cache: np.ndarray | None = None
@@ -303,6 +339,15 @@ class StreamingEQ:
             log.warning("[eq] stock_curve requested but radar_eq_taps.json "
                         "is missing — falling back to the 8-band EQ alone")
         self._fir = _OverlapSaveFIR(taps) if taps is not None else None
+        # ParametricEQ and OutputTrim exist exactly when the FIR does (see
+        # RADAR_PEQ_*): the device gates them on the same condition.
+        if self._fir is not None:
+            self._peq_sos = radar_peq_sos(self._sample_rate)
+            self._peq_zi = np.zeros((self._peq_sos.shape[0], 2), dtype=np.float64)
+            self._trim = 10 ** (RADAR_OUTPUT_TRIM_DB / 20.0)
+        else:
+            self._peq_sos = None
+            self._trim = 1.0
 
         # Last values update() applied; None until it is first called, so the
         # first call always lands rather than matching a coincidental default.
@@ -407,12 +452,15 @@ class StreamingEQ:
         samples = np.frombuffer(pcm, dtype=np.int16).astype(np.float64)
         if self._fir is not None:
             samples = self._fir.process(samples)
+            samples, self._peq_zi = sosfilt(self._peq_sos, samples, zi=self._peq_zi)
         if self._sos is not None:
             samples, self._zi = sosfilt(self._sos, samples, zi=self._zi)
         if self._guard is not None:
             samples = self._guard.process(samples)
         if self._limiter is not None:
             samples = self._limiter.process(samples)
+        if self._fir is not None:
+            samples = samples * self._trim   # OutputTrim: after MBCL's limiter
         return np.clip(samples, -32768, 32767).astype(np.int16).tobytes()
 
     def flush(self) -> bytes:
@@ -428,6 +476,8 @@ class StreamingEQ:
         tail = self._limiter.flush()
         if not tail.size:
             return b""
+        if self._fir is not None:
+            tail = tail * self._trim
         return np.clip(tail, -32768, 32767).astype(np.int16).tobytes()
 
 

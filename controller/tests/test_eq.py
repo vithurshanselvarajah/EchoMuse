@@ -1,4 +1,5 @@
 import math
+import pytest
 
 import numpy as np
 
@@ -80,3 +81,39 @@ def test_streaming_eq_flat_is_passthrough():
     eq = em_eq.StreamingEQ(RATE, bands=[0.0] * 8)
     chunk = _sine(500, seconds=0.05)
     assert eq.process(chunk) == chunk
+
+
+# ─── Radar ParametricEQ + OutputTrim (ParametricEQ.cfg / AFE.cfg) ─────────────
+
+def test_radar_parametric_eq_response():
+    """+5dB low shelf at 150Hz (Q .9) and +2dB peak at 80Hz (Q .9): the
+    shelf's own gain at its corner is half (+2.5dB), the peak adds on top of
+    it at 80Hz, and the top of the band is untouched."""
+    from scipy.signal import sosfreqz
+    fs = 48000
+    sos = em_eq.radar_peq_sos(fs)
+    f = np.array([20.0, 80.0, 150.0, 5000.0])
+    _, h = sosfreqz(sos, worN=f, fs=fs)
+    db = 20 * np.log10(np.abs(h))
+    assert 4.8 < db[0] < 5.6      # the shelf's 5dB, peak skirt negligible
+    assert 6.8 < db[1] < 7.5    # shelf plus the peak's 2dB
+    assert 2.8 < db[2] < 3.8      # near the shelf corner
+    assert abs(db[3]) < 0.1
+
+
+def test_radar_stock_curve_applies_output_trim():
+    """A flat-ish stream through the stock curve ends 3dB hotter than the
+    trim alone would explain only if the trim is applied: compare against the
+    same chain with the trim removed."""
+    fs = 48000
+    t = np.arange(fs // 2) / fs
+    x = (4000 * np.sin(2 * np.pi * 2000 * t)).astype(np.int16).tobytes()
+    a = em_eq.StreamingEQ(fs, stock_curve=True)
+    if a._fir is None:
+        pytest.skip("radar_eq_taps.json not present")
+    b = em_eq.StreamingEQ(fs, stock_curve=True)
+    b._trim = 1.0
+    ya = np.frombuffer(a.process(x), np.int16).astype(float)[fs // 4:]
+    yb = np.frombuffer(b.process(x), np.int16).astype(float)[fs // 4:]
+    ratio_db = 20 * np.log10(np.sqrt((ya**2).mean()) / np.sqrt((yb**2).mean()))
+    assert abs(ratio_db - em_eq.RADAR_OUTPUT_TRIM_DB) < 0.05
