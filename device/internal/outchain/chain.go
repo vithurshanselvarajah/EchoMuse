@@ -139,6 +139,20 @@ type Chain struct {
 	// while it does. See the radarPEQ* constants.
 	peq      []biquad
 	trimGain float64
+
+	// The volume, applied AHEAD of the chain on Radar (takesVolume), the
+	// way stock does it: AudioFlinger attenuates before the AFE's FIR and
+	// MBCL see the signal, so MBCL's compressors engage only at a volume
+	// that makes them reach their thresholds. Applied after the chain
+	// instead — as every board did until this — a 10:1 band-2 compressor
+	// sees full-scale audio at every volume and the bass is held down at
+	// a level nobody is listening at. preTarget is written by SetVolumeGain
+	// from any goroutine; preCur belongs to the ALSA goroutine.
+	takesVolume bool
+	tookVolume  bool // the last Process applied the volume; see TookVolume
+	preTarget   atomic.Uint64 // math.Float64bits of the gain
+	preCur      float64
+	inScratch   []float64 // the period's mono input, volume applied
 }
 
 // New builds a chain at the given sample rate, inactive, with DefaultParams,
@@ -166,13 +180,16 @@ func NewForBoard(sampleRate int, boardID string) *Chain {
 		guard = newBassGuard(fs, boardID)
 	}
 	c := &Chain{
-		fs:      fs,
-		boardID: boardID,
-		eq:      eq{fs: fs},
-		guard:   guard,
-		lim:     newLimiter(fs),
-		idle:    true,
+		fs:          fs,
+		boardID:     boardID,
+		eq:          eq{fs: fs},
+		guard:       guard,
+		lim:         newLimiter(fs),
+		idle:        true,
+		takesVolume: boardID == "radar",
+		preCur:      1,
 	}
+	c.preTarget.Store(math.Float64bits(1))
 	if boardID == "radar" {
 		c.firTaps = loadRadarEQTaps()
 		if c.firTaps != nil {
@@ -186,6 +203,21 @@ func NewForBoard(sampleRate int, boardID string) *Chain {
 	c.apply(DefaultParams())
 	return c
 }
+
+// TakesVolume reports whether this chain applies the volume itself, ahead
+// of its stages (Radar). When it does and is active, the caller must not
+// also apply the volume after it.
+func (c *Chain) TakesVolume() bool { return c.takesVolume }
+
+// TookVolume reports whether the last Process applied the volume, so the
+// caller applies it after only when the chain did not. Asked of what
+// Process DID rather than of Active(), which another goroutine may flip
+// between the question and the call. ALSA goroutine only.
+func (c *Chain) TookVolume() bool { return c.tookVolume }
+
+// SetVolumeGain sets the linear volume gain the chain ramps to on its next
+// period. Ignored by a chain that does not take the volume.
+func (c *Chain) SetVolumeGain(g float64) { c.preTarget.Store(math.Float64bits(g)) }
 
 // SetActive turns processing on or off. Off is a passthrough, which is what
 // a device must do while its controller is still processing the audio itself:
@@ -259,7 +291,11 @@ func (c *Chain) Process(buf []byte) (applied *Params) {
 		// saw, which is not the audio arriving now. Start clean.
 		c.reset()
 		c.running = active
+		// A gain carried from audio the chain last saw would ramp from a
+		// stale value; start at where the volume is now.
+		c.preCur = math.Float64frombits(c.preTarget.Load())
 	}
+	c.tookVolume = active && c.takesVolume
 	if !active {
 		return applied
 	}
@@ -280,13 +316,22 @@ func (c *Chain) Process(buf []byte) (applied *Params) {
 	} else if !c.wantFIR && c.fir != nil {
 		c.fir = nil
 	}
+	// The period's mono input, with the volume applied first when this
+	// chain takes it — same arithmetic as em_eq.StreamingEQ._apply_volume.
+	if len(c.inScratch) != frames {
+		c.inScratch = make([]float64, frames)
+	}
+	for i := 0; i < frames; i++ {
+		off := i * 4
+		l := int16(uint16(buf[off]) | uint16(buf[off+1])<<8)
+		r := int16(uint16(buf[off+2]) | uint16(buf[off+3])<<8)
+		c.inScratch[i] = (float64(l) + float64(r)) / 2
+	}
+	if c.takesVolume {
+		c.applyVolume(c.inScratch)
+	}
 	if c.fir != nil {
-		for i := 0; i < frames; i++ {
-			off := i * 4
-			l := int16(uint16(buf[off]) | uint16(buf[off+1])<<8)
-			r := int16(uint16(buf[off+2]) | uint16(buf[off+3])<<8)
-			c.firScratch[i] = (float64(l) + float64(r)) / 2
-		}
+		copy(c.firScratch, c.inScratch)
 		copy(c.firScratch, c.fir.process(c.firScratch))
 	}
 
@@ -308,7 +353,7 @@ func (c *Chain) Process(buf []byte) (applied *Params) {
 				x = c.peq[j].step(x)
 			}
 		} else {
-			x = (float64(l) + float64(r)) / 2
+			x = c.inScratch[i]
 		}
 
 		x = c.eq.step(x)
@@ -344,6 +389,29 @@ func (c *Chain) Process(buf []byte) (applied *Params) {
 		c.idle = false
 	}
 	return applied
+}
+
+// applyVolume scales x in place, ramping from the gain last applied to the
+// target across the period, as speaker.softVolume does: a step in gain
+// mid-waveform is a click.
+func (c *Chain) applyVolume(x []float64) {
+	tgt := math.Float64frombits(c.preTarget.Load())
+	cur := c.preCur
+	c.preCur = tgt
+	if tgt == cur {
+		if tgt != 1 {
+			for i := range x {
+				x[i] *= tgt
+			}
+		}
+		return
+	}
+	step := (tgt - cur) / float64(len(x))
+	g := cur
+	for i := range x {
+		g += step
+		x[i] *= g
+	}
 }
 
 func (c *Chain) reset() {

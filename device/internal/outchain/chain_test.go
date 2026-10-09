@@ -21,6 +21,9 @@ type vectorParams struct {
 	LimiterThreshold float64   `json:"limiterThreshold"`
 	LimiterRelease   float64   `json:"limiterRelease"`
 	StockCurve       bool      `json:"stockCurve"`
+	// VolumeGain is the pre-chain volume a Radar chain takes. Absent on
+	// every case that predates it, and then never set.
+	VolumeGain *float64 `json:"volumeGain"`
 }
 
 func (v vectorParams) params() Params {
@@ -119,6 +122,7 @@ func TestMatchesControllerChain(t *testing.T) {
 			}
 
 			sched := map[int]Params{}
+			vols := map[int]float64{}
 			for _, e := range vc.Schedule {
 				var at int
 				var vp vectorParams
@@ -129,6 +133,9 @@ func TestMatchesControllerChain(t *testing.T) {
 					t.Fatal(err)
 				}
 				sched[at] = vp.params()
+				if vp.VolumeGain != nil {
+					vols[at] = *vp.VolumeGain
+				}
 			}
 
 			boardID := vc.Board
@@ -141,6 +148,9 @@ func TestMatchesControllerChain(t *testing.T) {
 			for k := 0; k < vc.Chunks; k++ {
 				if p, ok := sched[k]; ok {
 					c.SetParams(p)
+				}
+				if g, ok := vols[k]; ok {
+					c.SetVolumeGain(g)
 				}
 				buf := stereo(in[k*vc.Chunk : (k+1)*vc.Chunk])
 				c.Process(buf)

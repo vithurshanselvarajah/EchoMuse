@@ -131,6 +131,17 @@ CASES = [
      "schedule": [[0, {"stockCurve": True, "bands": [3.0, -2.0, 0, 0, 0, 1.0, 0, -1.0]}],
                   [3, {"stockCurve": True, "bands": [3.0, -2.0, 0, 0, 0, 1.0, 0, -1.0],
                        "guardDb": -12.0}]]},
+    # Radar takes the volume AHEAD of the chain (em_eq volume_gain /
+    # outchain.Chain.SetVolumeGain), so MBCL sees the attenuated signal the
+    # way stock's does. Every kind of change: a quiet start, ramps up and
+    # down, and back to unity. volumeGain is only ever written in a delta,
+    # so no other case's manifest gains the key.
+    {"name": "radar_volume", "signal": "speechlike", "chunks": 8, "seed": 11,
+     "board": "radar",
+     "schedule": [[0, {"stockCurve": True, "volumeGain": 0.1}],
+                  [2, {"stockCurve": True, "volumeGain": 0.5}],
+                  [4, {"stockCurve": True, "volumeGain": 1.0}],
+                  [6, {"stockCurve": True, "volumeGain": 0.03}]]},
 ]
 
 
@@ -164,9 +175,13 @@ def render(case):
                              enabled=p0["limiterEnabled"])
     guard = em_mbc.build_guard(FS, board, bass_guard_db=p0["guardDb"],
                                enabled=p0["guardEnabled"])
+    # Radar's chain takes the volume; the device starts it at unity, which
+    # is what every Radar case that never names a volume runs at.
     chain = em_eq.StreamingEQ(FS, p0["bands"], p0["loudness"],
                               limiter=lim, guard=guard,
-                              stock_curve=p0.get("stockCurve", False))
+                              stock_curve=p0.get("stockCurve", False),
+                              volume_gain=(p0.get("volumeGain", 1.0)
+                                           if is_radar else None))
     out = []
     for c in range(case["chunks"]):
         p = _params_at(case["schedule"], c)
@@ -176,6 +191,8 @@ def render(case):
                      limiter_threshold=cur_lim_threshold_db,
                      limiter_release=cur_lim_release_ms,
                      guard_enabled=p["guardEnabled"], guard_db=p["guardDb"])
+        if is_radar:
+            chain.set_volume_gain(p.get("volumeGain", 1.0))
         out.append(chain.process(x[c * CHUNK:(c + 1) * CHUNK].tobytes()))
     y = np.frombuffer(b"".join(out), dtype=np.int16)
     stats = {

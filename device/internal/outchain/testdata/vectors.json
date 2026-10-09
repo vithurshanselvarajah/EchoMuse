@@ -624,5 +624,112 @@
    "clippedBypassed": 0
   },
   "board": "radar"
+ },
+ {
+  "name": "radar_volume",
+  "chunk": 2048,
+  "sampleRate": 48000,
+  "chunks": 8,
+  "schedule": [
+   [
+    0,
+    {
+     "bands": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+     ],
+     "loudness": false,
+     "guardEnabled": true,
+     "guardDb": -30.0,
+     "limiterEnabled": true,
+     "limiterThreshold": -1.0,
+     "limiterRelease": 150.0,
+     "stockCurve": true,
+     "volumeGain": 0.1
+    }
+   ],
+   [
+    2,
+    {
+     "bands": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+     ],
+     "loudness": false,
+     "guardEnabled": true,
+     "guardDb": -30.0,
+     "limiterEnabled": true,
+     "limiterThreshold": -1.0,
+     "limiterRelease": 150.0,
+     "stockCurve": true,
+     "volumeGain": 0.5
+    }
+   ],
+   [
+    4,
+    {
+     "bands": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+     ],
+     "loudness": false,
+     "guardEnabled": true,
+     "guardDb": -30.0,
+     "limiterEnabled": true,
+     "limiterThreshold": -1.0,
+     "limiterRelease": 150.0,
+     "stockCurve": true,
+     "volumeGain": 1.0
+    }
+   ],
+   [
+    6,
+    {
+     "bands": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+     ],
+     "loudness": false,
+     "guardEnabled": true,
+     "guardDb": -30.0,
+     "limiterEnabled": true,
+     "limiterThreshold": -1.0,
+     "limiterRelease": 150.0,
+     "stockCurve": true,
+     "volumeGain": 0.03
+    }
+   ]
+  ],
+  "stats": {
+   "guardReductionDb": 30.0,
+   "limiterReductionDb": 0.0,
+   "clipped": 0,
+   "clippedBypassed": 0
+  },
+  "board": "radar"
  }
 ]

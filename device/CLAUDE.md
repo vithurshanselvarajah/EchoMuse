@@ -1114,6 +1114,21 @@ rather than −63.5dB. The speaker is silent until told a volume, and the
 volume controller applies its level the moment it is wired (`SetVolumeApply`),
 starting from 100, which is where Init used to leave the DAC.
 
+**On Radar the volume goes IN FRONT of the output chain, not after it**
+(`outchain.Chain.TakesVolume`, 2026-10-10). Stock attenuates in AudioFlinger,
+before the AFE's FIR and MBCL ever see the signal, so MBCL's compressors only
+engage once the user has turned it up — at an ordinary volume the music sits
+under band 2's −18dB threshold and the stock curve's +10dB of bass passes
+untouched. Applied after the chain, as every board did, those compressors see
+full-scale audio at every volume: porting MBCL's bands 2–4 (8239c66) then held
+the bass down at levels nobody was listening at, measured as bass-over-mids
+falling from +12.9dB to +5.9dB at every volume against a stock model's +16.5dB
+(level 80) to +1.7dB (level 127). The chain ramps the gain per period exactly
+as `softVolume` does, and the speaker then settles `softVolume` instead of
+applying it, so nothing is attenuated twice. Only while the chain is ACTIVE:
+an inactive chain (the controller still processing) keeps the volume after,
+as before. Biscuit is unchanged — its single bass band was tuned in place.
+
 **The scale stops at the codec's unity gain, and that ceiling is load-bearing.**
 tinymix ctl 61 is the tlv320aic32x4 DAC *digital* volume: 176 steps of 0.5dB
 spanning −63.5…+24dB, with 0dB at index **127**. The firmware shipped

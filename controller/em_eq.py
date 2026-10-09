@@ -322,7 +322,8 @@ class StreamingEQ:
                  loudness: bool = False,
                  limiter: "em_limiter.Limiter | None" = None,
                  guard: "em_mbc.BassGuard | None" = None,
-                 stock_curve: bool = False):
+                 stock_curve: bool = False,
+                 volume_gain: float | None = None):
         self._limiter = limiter
         self._guard = guard
         self._sample_rate = int(sample_rate)   # set_bands rebuilds against it
@@ -348,6 +349,16 @@ class StreamingEQ:
         else:
             self._peq_sos = None
             self._trim = 1.0
+
+        # Volume AHEAD of the chain (Radar), as stock does it: AudioFlinger
+        # attenuates before the AFE's EQ/MBCL ever see the signal, so the
+        # compressors engage only when the user has turned it up. None keeps
+        # the old arrangement (volume applied after the chain, on the
+        # device) for every caller that does not pass one. Ramped across
+        # each process() call exactly as the device's softVolume ramps a
+        # period — see set_volume_gain.
+        self._vol_target = None if volume_gain is None else float(volume_gain)
+        self._vol_cur = self._vol_target
 
         # Last values update() applied; None until it is first called, so the
         # first call always lands rather than matching a coincidental default.
@@ -445,11 +456,36 @@ class StreamingEQ:
             self._zi = np.zeros((sos.shape[0], 2), dtype=np.float64)
         self._sos = sos
 
+    def set_volume_gain(self, gain: float) -> None:
+        """Change the pre-chain volume gain; the next process() call ramps
+        to it. Only meaningful on a chain built with volume_gain."""
+        if self._vol_target is not None:
+            self._vol_target = float(gain)
+
+    def _apply_volume(self, x: np.ndarray) -> np.ndarray:
+        # The same arithmetic as device/internal/outchain's pre-gain (and
+        # speaker.softVolume before it): a linear ramp from the last gain to
+        # the target across this call, accumulated one step at a time so the
+        # rounding matches the Go loop's `g += step`.
+        tgt, cur = self._vol_target, self._vol_cur
+        if tgt == cur:
+            out = x if tgt == 1.0 else x * tgt
+        else:
+            step = (tgt - cur) / x.size
+            g = np.add.accumulate(np.concatenate(([cur + step],
+                                                  np.full(x.size - 1, step))))
+            out = x * g
+        self._vol_cur = tgt
+        return out
+
     def process(self, pcm: bytes) -> bytes:
         if len(pcm) < 2 or (self._sos is None and self._limiter is None
-                            and self._guard is None and self._fir is None):
+                            and self._guard is None and self._fir is None
+                            and self._vol_target is None):
             return pcm
         samples = np.frombuffer(pcm, dtype=np.int16).astype(np.float64)
+        if self._vol_target is not None:
+            samples = self._apply_volume(samples)
         if self._fir is not None:
             samples = self._fir.process(samples)
             samples, self._peq_zi = sosfilt(self._peq_sos, samples, zi=self._peq_zi)
