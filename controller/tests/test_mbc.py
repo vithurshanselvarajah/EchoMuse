@@ -170,3 +170,33 @@ def test_the_parameters_come_from_the_measured_stock_configuration():
     assert M.BASS_RATIO == 20.0
     assert M.BASS_THRESHOLD_DB == -50.0
     assert M.BASS_RELEASE_MS == 200.0
+
+
+def test_radar_parameters_come_from_its_own_measured_configuration():
+    """
+    Radar runs its own MBCL.cfg ("Radar Tuning V4.5"), not biscuit's — read
+    off a Radar unit's stock firmware, not chosen. Ratio and release match
+    biscuit's; only the crossover and threshold differ (the rest of band 1
+    is why only this one band is ported — see the module docstring).
+    """
+    assert M.RADAR_CROSSOVER_HZ == 70.0
+    assert M.RADAR_BASS_THRESHOLD_DB == -25.0
+
+
+@pytest.mark.parametrize("board_id,crossover_hz,threshold_db", [
+    ("biscuit", M.CROSSOVER_HZ, M.BASS_THRESHOLD_DB),
+    ("radar", M.RADAR_CROSSOVER_HZ, M.RADAR_BASS_THRESHOLD_DB),
+    (None, M.CROSSOVER_HZ, M.BASS_THRESHOLD_DB),       # no board reported yet
+    ("dot3", M.CROSSOVER_HZ, M.BASS_THRESHOLD_DB),     # unrecognised -> biscuit
+])
+def test_tuning_for_selects_by_board(board_id, crossover_hz, threshold_db):
+    assert M._tuning_for(board_id) == (crossover_hz, threshold_db)
+
+
+def test_for_stream_applies_the_boards_tuning():
+    """for_stream is the production call site's path (em_player.py) — this
+    pins that board_id actually reaches the filter design, not just the
+    lookup table above."""
+    guard = M.for_stream(FS, enabled=True, board_id="radar")
+    assert guard.crossover_hz == M.RADAR_CROSSOVER_HZ
+    assert guard._bass.threshold_db == M.RADAR_BASS_THRESHOLD_DB

@@ -109,6 +109,14 @@ CASES = [
          [16, {"bands": [0.0] * 8, "loudness": False}],           # back to flat
          [18, {"bands": [-6.0] * 8, "guardEnabled": True}],       # shaped again
      ]},
+    # Radar's own board — crossover 70Hz / threshold -25dB (em_mbc.RADAR_*),
+    # not biscuit's 115Hz / -50dB. speechlike has real content below 70Hz
+    # (the 55Hz tone) specifically so band 1 has something to act on; a
+    # mid-stream guard-depth change proves the board's values, not just the
+    # defaults, stay in force across SetParams.
+    {"name": "radar_board", "signal": "speechlike", "chunks": 6, "seed": 9,
+     "board": "radar",
+     "schedule": [[0, {}], [3, {"guardDb": -15.0}]]},
 ]
 
 
@@ -124,11 +132,15 @@ def render(case):
     """(input int16, output int16, stats) for one case."""
     x = _signal(case["signal"], case["chunks"], case["seed"])
     p0 = _params_at(case["schedule"], 0)
+    board = case.get("board", "biscuit")
+    crossover_hz, threshold_db = em_mbc._tuning_for(board)
     lim = em_limiter.Limiter(FS, threshold_db=p0["limiterThreshold"],
                              release_ms=p0["limiterRelease"],
                              enabled=p0["limiterEnabled"])
     guard = em_mbc.BassGuard(FS, bass_guard_db=p0["guardDb"],
-                             enabled=p0["guardEnabled"])
+                             enabled=p0["guardEnabled"],
+                             crossover_hz=crossover_hz,
+                             threshold_db=threshold_db)
     chain = em_eq.StreamingEQ(FS, p0["bands"], p0["loudness"],
                               limiter=lim, guard=guard)
     out = []
@@ -151,11 +163,16 @@ def render(case):
 
 
 def manifest_entry(case, stats):
-    return {"name": case["name"], "chunk": CHUNK, "sampleRate": FS,
-            "chunks": case["chunks"],
-            "schedule": [[at, _params_at(case["schedule"], at)]
-                         for at, _ in case["schedule"]],
-            "stats": stats}
+    entry = {"name": case["name"], "chunk": CHUNK, "sampleRate": FS,
+             "chunks": case["chunks"],
+             "schedule": [[at, _params_at(case["schedule"], at)]
+                          for at, _ in case["schedule"]],
+             "stats": stats}
+    # Omitted for every existing (biscuit) case, so the committed manifest's
+    # unchanged entries stay byte-identical — only the new case gains a key.
+    if case.get("board", "biscuit") != "biscuit":
+        entry["board"] = case["board"]
+    return entry
 
 
 def main():

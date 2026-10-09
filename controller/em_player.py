@@ -696,6 +696,7 @@ class MediaSession:
         if device.output_chain_on_device:
             eq = em_eq.Passthrough()
         else:
+            guard_crossover_hz, guard_threshold_db = em_mbc._tuning_for(device.board_id)
             eq = em_eq.StreamingEQ(SPEAKER_RATE, device.eq_bands, device.eq_loudness,
                                    limiter=em_limiter.Limiter(
                                        SPEAKER_RATE,
@@ -705,7 +706,9 @@ class MediaSession:
                                    guard=em_mbc.BassGuard(
                                        SPEAKER_RATE,
                                        bass_guard_db=device.bass_guard_db,
-                                       enabled=device.bass_guard_enabled))
+                                       enabled=device.bass_guard_enabled,
+                                       crossover_hz=guard_crossover_hz,
+                                       threshold_db=guard_threshold_db))
         start_pos = self._pos
         proc = None
         seg_start = loop.time()

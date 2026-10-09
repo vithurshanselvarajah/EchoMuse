@@ -54,13 +54,35 @@ from scipy.signal import butter, sosfilt, sosfreqz
 
 import em_limiter
 
-# Crossover, Hz. Measured off stock (#229), not chosen.
+# Crossover, Hz. Measured off stock (#229), not chosen. This is biscuit's
+# band 1 (0-115Hz) from /system/vendor/etc/audio-algorithms/MBCL.cfg.
 CROSSOVER_HZ = 115.0
 
-# Bass band law, also from stock.
+# Bass band law, also from stock (biscuit).
 BASS_RATIO        = 20.0
 BASS_THRESHOLD_DB = -50.0
 BASS_RELEASE_MS   = 200.0
+
+# Radar's own MBCL.cfg ("Radar Tuning V4.5") is a real 4-band multiband
+# compressor, not a copy of biscuit's. Only band 1 is ported here, same as
+# biscuit — see the module docstring for why bands 2-4 are not. Its crossover
+# (70Hz, not 115) and threshold (-25dB, not -50) are measured off a Radar
+# unit's own firmware; ratio and release are the same on both boards.
+RADAR_CROSSOVER_HZ     = 70.0
+RADAR_BASS_THRESHOLD_DB = -25.0
+
+# Per-board tuning, keyed the same way device/pkg/board.Board.ID is on the
+# other side of this port. An unrecognised id (including None) gets
+# biscuit's numbers — the only board this was ever measured against until
+# Radar, and the safer of the two to default an unknown unit to.
+_BOARD_TUNING = {
+    "biscuit": (CROSSOVER_HZ, BASS_THRESHOLD_DB),
+    "radar":   (RADAR_CROSSOVER_HZ, RADAR_BASS_THRESHOLD_DB),
+}
+
+
+def _tuning_for(board_id: str | None) -> tuple[float, float]:
+    return _BOARD_TUNING.get(board_id or "biscuit", _BOARD_TUNING["biscuit"])
 
 # How far the bass band may be pulled down. Stock uses -40dB.
 #
@@ -158,6 +180,7 @@ class BassGuard:
     def __init__(self, sample_rate: int,
                  bass_guard_db: float = DEFAULT_BASS_GUARD_DB,
                  crossover_hz: float = CROSSOVER_HZ,
+                 threshold_db: float = BASS_THRESHOLD_DB,
                  enabled: bool = True):
         self.sample_rate = int(sample_rate)
         # Bypassed rather than absent, so a stream can be toggled without
@@ -165,13 +188,14 @@ class BassGuard:
         self.enabled = bool(enabled)
         self.bass_guard_db = min(0.0, float(bass_guard_db))
         self.crossover_hz = float(crossover_hz)
+        self.threshold_db = float(threshold_db)
 
         self._lp = _lr4(self.crossover_hz, self.sample_rate, "low")
         self._hp = _lr4(self.crossover_hz, self.sample_rate, "high")
         self._zl = np.zeros((self._lp.shape[0], 2))
         self._zh = np.zeros((self._hp.shape[0], 2))
 
-        self._bass = _BandGain(BASS_RATIO, BASS_THRESHOLD_DB,
+        self._bass = _BandGain(BASS_RATIO, self.threshold_db,
                                BASS_RELEASE_MS, self.bass_guard_db,
                                self.sample_rate)
 
@@ -226,7 +250,8 @@ class BassGuard:
 
 def for_stream(sample_rate: int,
                enabled: bool,
-               bass_guard_db: float = DEFAULT_BASS_GUARD_DB
+               bass_guard_db: float = DEFAULT_BASS_GUARD_DB,
+               board_id: str | None = None,
                ) -> "BassGuard | None":
     """
     Build one for a stream, or None when disabled.
@@ -234,7 +259,15 @@ def for_stream(sample_rate: int,
     Takes plain values rather than a Device, for em_limiter.for_stream's
     reason: em_player cannot import em_controller, and the test suite cannot
     import either.
+
+    board_id selects the crossover/threshold measured for that board (see
+    _BOARD_TUNING); unrecognised or absent gets biscuit's, same as the Go
+    port's default. In practice this path is controller-side only, i.e. a
+    device that has NOT negotiated output_chain — a device that has moved
+    its own processing on-device is unaffected by anything here.
     """
     if not enabled:
         return None
-    return BassGuard(sample_rate, bass_guard_db=bass_guard_db)
+    crossover_hz, threshold_db = _tuning_for(board_id)
+    return BassGuard(sample_rate, bass_guard_db=bass_guard_db,
+                     crossover_hz=crossover_hz, threshold_db=threshold_db)

@@ -93,13 +93,23 @@ type Chain struct {
 	running bool // active on the previous period
 }
 
-// New builds a chain at the given sample rate, inactive, with DefaultParams.
+// New builds a chain at the given sample rate, inactive, with DefaultParams,
+// tuned for biscuit — see NewForBoard for a board-aware chain. Kept so every
+// existing caller and test vector (biscuit-only, to date) is unaffected.
 func New(sampleRate int) *Chain {
+	return NewForBoard(sampleRate, "biscuit")
+}
+
+// NewForBoard builds a chain at the given sample rate, inactive, with
+// DefaultParams, with the bass guard tuned for boardID (pkg/board.IDOf) —
+// see bassGuardTuning. Only the guard varies by board; the EQ and limiter
+// are not board-specific.
+func NewForBoard(sampleRate int, boardID string) *Chain {
 	fs := float64(sampleRate)
 	c := &Chain{
 		fs:    fs,
 		eq:    eq{fs: fs},
-		guard: newBassGuard(fs),
+		guard: newBassGuard(fs, boardID),
 		lim:   newLimiter(fs),
 		idle:  true,
 	}

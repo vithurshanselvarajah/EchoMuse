@@ -244,7 +244,7 @@ func NewPcmSpeaker(echoTap func([]byte), levelTap func(rms float64)) (*PcmSpeake
 		deadCh:   make(chan struct{}),
 		echoTap:  echoTap,
 		levelTap: levelTap,
-		chain:    outchain.New(48000),
+		chain:    outchain.NewForBoard(48000, board.IDOf(board.Current())),
 		chainBuf: make([]byte, periodBytes),
 		srcBuf:   make([]byte, periodBytes),
 	}

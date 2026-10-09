@@ -488,5 +488,62 @@
    "clipped": 0,
    "clippedBypassed": 4
   }
+ },
+ {
+  "name": "radar_board",
+  "chunk": 2048,
+  "sampleRate": 48000,
+  "chunks": 6,
+  "schedule": [
+   [
+    0,
+    {
+     "bands": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+     ],
+     "loudness": false,
+     "guardEnabled": true,
+     "guardDb": -30.0,
+     "limiterEnabled": true,
+     "limiterThreshold": -1.0,
+     "limiterRelease": 150.0
+    }
+   ],
+   [
+    3,
+    {
+     "bands": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+     ],
+     "loudness": false,
+     "guardEnabled": true,
+     "guardDb": -15.0,
+     "limiterEnabled": true,
+     "limiterThreshold": -1.0,
+     "limiterRelease": 150.0
+    }
+   ]
+  ],
+  "stats": {
+   "guardReductionDb": 14.322276410741477,
+   "limiterReductionDb": 2.881916475779737,
+   "clipped": 0,
+   "clippedBypassed": 0
+  },
+  "board": "radar"
  }
 ]

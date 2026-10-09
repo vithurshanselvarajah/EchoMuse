@@ -40,7 +40,12 @@ type vectorCase struct {
 	Chunk      int    `json:"chunk"`
 	SampleRate int    `json:"sampleRate"`
 	Chunks     int    `json:"chunks"`
-	Schedule   [][2]json.RawMessage
+	// Board selects the bass guard's tuning (see outchain.NewForBoard).
+	// Absent on every case generated before Radar existed, and
+	// gen_vectors.py omits it for biscuit still — so empty here must mean
+	// biscuit, not "unset", same rule as pkg/board.IDOf.
+	Board    string `json:"board"`
+	Schedule [][2]json.RawMessage
 	Stats      struct {
 		GuardReductionDb   float64 `json:"guardReductionDb"`
 		LimiterReductionDb float64 `json:"limiterReductionDb"`
@@ -124,7 +129,11 @@ func TestMatchesControllerChain(t *testing.T) {
 				sched[at] = vp.params()
 			}
 
-			c := New(vc.SampleRate)
+			boardID := vc.Board
+			if boardID == "" {
+				boardID = "biscuit"
+			}
+			c := NewForBoard(vc.SampleRate, boardID)
 			c.SetActive(true)
 			got := make([]int16, 0, len(in))
 			for k := 0; k < vc.Chunks; k++ {
