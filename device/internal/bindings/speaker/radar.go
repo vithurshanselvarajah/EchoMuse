@@ -96,6 +96,30 @@ func prepareRadarSpeaker(path string) error {
 	return nil
 }
 
+// radarDacUnity is Radar's own DAC digital-volume baseline — NOT 127, and
+// deliberately not the shared dacUnity constant (pcm_speaker.go), which is
+// biscuit's own measured value and is never reached on this path at all
+// (Init branches to startRadarOutput before dacUnity is ever read).
+//
+// 127 was carried over from biscuit on the assumption that this control's
+// "0dB unity" point is the same across both boards' codecs. It is not: on
+// biscuit, indexes above 127 apply positive digital gain to near-full-scale
+// PCM and measurably clip (device/internal/server/volume.go). On Radar,
+// stock firmware runs this exact control permanently at 255 and does all
+// its own volume control in AudioFlinger software instead — confirmed from
+// a Radar unit's own stock audio_policy_configuration.xml and
+// default_volume_tables.xml — so 127 was never Radar's unity point, just a
+// borrowed number nobody had reason to question until the speaker measured
+// quieter than stock at every volume level.
+//
+// 150, not 255: measured directly on hardware (owner's own unit, tinymix
+// 'PCM Playback Volume' <n> while audio played) — clean at 150, still clean
+// one step up at 175 but the device browned out after ~1s, consistent with
+// the test rig's power supply rather than the codec (current draw rising
+// with level, not a codec fault). 150 is the confirmed-clean value; nothing
+// here claims headroom beyond it exists; it most likely does, unverified.
+const radarDacUnity = "150"
+
 // The measured quiet-start sequence from the Radar bench: clock silence for
 // three seconds at gain zero, release physical mute, wait four seconds, then
 // ramp the DAC. User volume remains in software; Init has not returned yet,
@@ -122,7 +146,7 @@ func unmuteRadarSpeaker(wait func(time.Duration) error) (err error) {
 	if err = wait(4 * time.Second); err != nil {
 		return err
 	}
-	for v := 10; v < 127; v += 10 {
+	for v := 10; v < 150; v += 10 {
 		if err = mixer.Set(mixer.PlaybackVolume, strconv.Itoa(v)); err != nil {
 			return err
 		}
@@ -130,5 +154,5 @@ func unmuteRadarSpeaker(wait func(time.Duration) error) (err error) {
 			return err
 		}
 	}
-	return mixer.Set(mixer.PlaybackVolume, "127")
+	return mixer.Set(mixer.PlaybackVolume, radarDacUnity)
 }

@@ -11,6 +11,16 @@ import (
 	"github.com/wilbowes/EchoMuse/internal/bindings/mixer"
 )
 
+// Pins the measured value against silent drift — same reason
+// controller/tests/test_mbc.py pins em_mbc's stock-config numbers. Change
+// this only with a fresh measurement on real hardware to back it up; see
+// the constant's own doc comment for how this one was obtained.
+func TestRadarDacUnityMatchesWhatWasMeasuredOnHardware(t *testing.T) {
+	if radarDacUnity != "150" {
+		t.Fatalf("radarDacUnity = %q, want \"150\"", radarDacUnity)
+	}
+}
+
 func profileXML(values string) string {
 	return `<mixercontrol><path name="ext_headphone_output" value="turnon"><kctl name="biquad coefficients" value="bad"/></path><path name="ext_speaker_output" value="turnon"><kctl name="biquad coefficients" value="` + values + `"/></path></mixercontrol>`
 }
@@ -102,7 +112,7 @@ func TestRadarUnmuteSequenceAndStreamFailure(t *testing.T) {
 		t.Fatal(waits)
 	}
 	last := m.writes[len(m.writes)-1]
-	if last.Ctl != mixer.PlaybackVolume || last.Args[0] != "127" {
+	if last.Ctl != mixer.PlaybackVolume || last.Args[0] != radarDacUnity {
 		t.Fatal(last)
 	}
 	for failWait := 1; failWait <= len(waits); failWait++ {
