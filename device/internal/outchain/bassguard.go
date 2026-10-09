@@ -111,3 +111,16 @@ func (g *bassGuard) reset() {
 	}
 	g.gainDb = 0
 }
+
+// setEnabled/setFloorDb/takeMaxReductionDb complete bassStage — see
+// chain.go. Radar's radarMultiband implements the same interface, so
+// Chain.guard can hold either without the Process loop or apply() caring
+// which board it is on.
+func (g *bassGuard) setEnabled(enabled bool)   { g.enabled = enabled }
+func (g *bassGuard) setFloorDb(floorDb float64) { g.floorDb = floorDb }
+
+func (g *bassGuard) takeMaxReductionDb() float64 {
+	r := g.maxReductionDb
+	g.maxReductionDb = 0
+	return r
+}

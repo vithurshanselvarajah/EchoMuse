@@ -49,6 +49,9 @@ not the same as removing a band. Bass reduction of 20dB in band 1 produced a
 measured 0.4dB at the output. Found by measurement, not by reading it.
 """
 
+import math
+from dataclasses import dataclass
+
 import numpy as np
 from scipy.signal import butter, sosfilt, sosfreqz
 
@@ -205,6 +208,13 @@ class BassGuard:
         anything, and for whether it is doing too much."""
         return round(self._bass.max_reduction_db, 2)
 
+    @property
+    def raw_max_reduction_db(self) -> float:
+        """Same, full precision — what test vectors are generated from, and
+        the counterpart gen_vectors.py uses uniformly across both this
+        class and RadarMultiband."""
+        return self._bass.max_reduction_db
+
     def set_params(self,
                    bass_guard_db: float | None = None,
                    enabled: bool | None = None) -> None:
@@ -252,7 +262,7 @@ def for_stream(sample_rate: int,
                enabled: bool,
                bass_guard_db: float = DEFAULT_BASS_GUARD_DB,
                board_id: str | None = None,
-               ) -> "BassGuard | None":
+               ) -> "BassGuard | RadarMultiband | None":
     """
     Build one for a stream, or None when disabled.
 
@@ -260,14 +270,315 @@ def for_stream(sample_rate: int,
     reason: em_player cannot import em_controller, and the test suite cannot
     import either.
 
-    board_id selects the crossover/threshold measured for that board (see
-    _BOARD_TUNING); unrecognised or absent gets biscuit's, same as the Go
-    port's default. In practice this path is controller-side only, i.e. a
-    device that has NOT negotiated output_chain — a device that has moved
-    its own processing on-device is unaffected by anything here.
+    board_id picks the class — see build_guard. In practice this path is
+    controller-side only, i.e. a device that has NOT negotiated
+    output_chain — a device that has moved its own processing on-device is
+    unaffected by anything here.
     """
     if not enabled:
         return None
+    return build_guard(sample_rate, board_id, bass_guard_db=bass_guard_db)
+
+
+def build_guard(sample_rate: int,
+                board_id: str | None,
+                bass_guard_db: float = DEFAULT_BASS_GUARD_DB,
+                enabled: bool = True,
+                ) -> "BassGuard | RadarMultiband":
+    """
+    One guard/compressor instance for a stream, picking the class the board
+    actually has. Radar runs its own real 4-band MBCL (RadarMultiband);
+    every other board keeps the single-band BassGuard above. bass_guard_db
+    is the one depth control the dashboard exposes either way — on Radar it
+    reaches only band 1's floor, same as before; bands 2-4 have no control,
+    same reasoning as the limiter override (see em_limiter.RADAR_*).
+
+    The single call site both em_player.py and em_controller.py's
+    _guard_for now share, so a board's class can never drift between a
+    voice turn and a music stream.
+    """
+    if (board_id or "biscuit") == "radar":
+        return RadarMultiband(sample_rate, bass_guard_db=bass_guard_db,
+                              enabled=enabled)
     crossover_hz, threshold_db = _tuning_for(board_id)
     return BassGuard(sample_rate, bass_guard_db=bass_guard_db,
-                     crossover_hz=crossover_hz, threshold_db=threshold_db)
+                     crossover_hz=crossover_hz, threshold_db=threshold_db,
+                     enabled=enabled)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Radar's full 4-band MBCL — "Radar Tuning V4.5"
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# Read verbatim off a Radar unit's own
+# /system/vendor/etc/audio-algorithms/MBCL.cfg (the same file RADAR_CROSSOVER_HZ
+# / RADAR_BASS_THRESHOLD_DB above were read from — those two numbers are band
+# 1's comp_thresh/crossover and agree with this table exactly). Biscuit's own
+# bands 2-4 are deliberately NOT ported (see the module docstring); Radar's
+# are not that uniform "one gentle law repeated" case — four different
+# ratios and thresholds, with band 3 (200-3250Hz, most of the midrange)
+# carrying its own +3dB input trim into both its compressor and its limiter,
+# which is very likely a real part of what reads as "depth" against an
+# unmodified Echo:
+#
+#     mbcl_inVol (system gain, whole signal, before any band)   : +4dB
+#     crossovers                                                : 70 / 200 / 3250 Hz
+#     band 1   0-70Hz      comp 20:1 -25dB floor -40dB  lim -12dB/200ms
+#     band 2  70-200Hz     comp 10:1 -18dB floor -40dB  lim -12dB/80ms
+#     band 3 200-3250Hz    comp  3:1 -15dB floor -40dB  lim  -4dB/20ms  (+3dB in)
+#     band 4 3250Hz-Nyq    comp  2:1 -10dB floor -40dB  lim  -3dB/20ms  (+3dB in)
+#     full-band limiter (already ported, see em_limiter.RADAR_*)  -3dB/20ms
+#
+# ONE NUMBER IS INFERRED, NOT READ: the config names a release time for each
+# band's LIMITER (lim_release) but none at all for its COMPRESSOR — there is
+# no comp_release field anywhere in the file. Rather than inventing an
+# unrelated number, each band's compressor reuses ITS OWN limiter's release
+# (200/80/20/20ms) — the two stages in a band most plausibly share a time
+# constant, and for band 1 this reuses BASS_RELEASE_MS=200 exactly, so
+# nothing about band 1's existing behaviour changes. Flagged here the same
+# way DEFAULT_BASS_GUARD_DB's choice is: a reasoned default, not a
+# measurement, in case a future read of the binary settles it properly.
+RADAR_MBCL_CROSSOVERS_HZ = (70.0, 200.0, 3250.0)
+
+# The system gain MBCL applies to the WHOLE signal before splitting into
+# bands — not a per-band trim. Every band's compressor/limiter sees this
+# raised level, which is part of how stock gets its loudness/density;
+# dropping it would leave every band's law engaging less often than stock's
+# own does.
+RADAR_MBCL_IN_VOL_DB = 4.0
+
+
+@dataclass(frozen=True)
+class _MbclBand:
+    comp_ratio: float
+    comp_threshold_db: float
+    comp_floor_db: float
+    comp_in_vol_db: float
+    lim_threshold_db: float
+    lim_release_ms: float
+    lim_in_vol_db: float
+
+
+RADAR_MBCL_BANDS: tuple[_MbclBand, ...] = (
+    _MbclBand(comp_ratio=20.0, comp_threshold_db=-25.0, comp_floor_db=-40.0,
+              comp_in_vol_db=0.0,
+              lim_threshold_db=-12.0, lim_release_ms=200.0, lim_in_vol_db=0.0),
+    _MbclBand(comp_ratio=10.0, comp_threshold_db=-18.0, comp_floor_db=-40.0,
+              comp_in_vol_db=0.0,
+              lim_threshold_db=-12.0, lim_release_ms=80.0, lim_in_vol_db=0.0),
+    _MbclBand(comp_ratio=3.0, comp_threshold_db=-15.0, comp_floor_db=-40.0,
+              comp_in_vol_db=3.0,
+              lim_threshold_db=-4.0, lim_release_ms=20.0, lim_in_vol_db=3.0),
+    _MbclBand(comp_ratio=2.0, comp_threshold_db=-10.0, comp_floor_db=-40.0,
+              comp_in_vol_db=3.0,
+              lim_threshold_db=-3.0, lim_release_ms=20.0, lim_in_vol_db=0.0),
+)
+
+# A true peak limiter is this module's compressor with an infinite ratio
+# (so the gain exactly cancels whatever is over threshold, pinning the
+# output AT it) and no floor (a limiter may reduce without bound) — see
+# _band_limiter. Reusing _BandGain rather than writing a second gain law
+# means the limiter stage is held to the same tests as the compressor one.
+_INFINITE_RATIO = math.inf
+
+
+def _band_limiter(threshold_db: float, release_ms: float, fs: int) -> "_BandGain":
+    return _BandGain(_INFINITE_RATIO, threshold_db, release_ms, -math.inf, fs)
+
+
+def four_band_flatness_db(crossovers_hz: tuple[float, float, float] = RADAR_MBCL_CROSSOVERS_HZ,
+                          fs: int = 48000) -> float:
+    """
+    Peak-to-peak deviation of the four allpass-compensated bands' sum, in
+    dB — the multi-band equivalent of crossover_flatness_db.
+
+    A naive recursive split (keep halving the high branch, as
+    crossover_flatness_db's single-crossover case does) does NOT sum flat
+    once nested: measured 1.59dB of ripple near the crossovers, because an
+    LR4 split's sum is flat only in MAGNITUDE — its PHASE rotates with
+    frequency (measured up to 111 degrees near a crossover) — so summing
+    bands that went through a DIFFERENT NUMBER of filter stages adds
+    mismatched phases, not just flat gain.
+
+    The fix is standard multi-way crossover design: give every band the
+    SAME total number of stages by running the earlier ones through an
+    ALLPASS version (that crossover's own LP+HP, summed and used only for
+    its phase) of every later crossover they did not actually split on —
+    see RadarMultiband. That makes the whole network end to end a cascade
+    of allpass filters, each contributing |H|=1, so the product is exactly
+    1: measured 4.6e-11dB, at the floor of float64 rather than merely small.
+    """
+    fc1, fc2, fc3 = crossovers_hz
+    f = np.geomspace(5.0, fs * 0.4999, 8192)
+
+    def resp(fc, kind):
+        _, h = sosfreqz(_lr4(fc, fs, kind), worN=f, fs=fs)
+        return h
+
+    lp1, hp1 = resp(fc1, "low"), resp(fc1, "high")
+    lp2, hp2 = resp(fc2, "low"), resp(fc2, "high")
+    lp3, hp3 = resp(fc3, "low"), resp(fc3, "high")
+    ap2, ap3 = lp2 + hp2, lp3 + hp3
+
+    band1 = ap3 * ap2 * lp1
+    band2 = ap3 * lp2 * hp1
+    band3 = lp3 * hp2 * hp1
+    band4 = hp3 * hp2 * hp1
+
+    mag = np.abs(band1 + band2 + band3 + band4)
+    return float(20.0 * np.log10(mag.max() / max(mag.min(), _EPS)))
+
+
+class RadarMultiband:
+    """
+    Radar's real 4-band MBCL, in full — see the constants above for the
+    table and for what one number (each band's compressor release) is
+    inferred rather than read.
+
+    Three crossovers split the signal into four bands; each band runs its
+    own compressor then its own peak limiter, both with their own input
+    trim (comp_inVol/lim_inVol); the four are summed. The combined
+    full-band limiter (em_limiter.RADAR_THRESHOLD_DB/RELEASE_MS) is NOT
+    part of this class — it is MBCL's own "Full-band limiter" entry and
+    stays exactly where it already runs, downstream of this, in
+    em_player.py/em_eq.py.
+
+    EXACT FLATNESS, THROUGH ALLPASS COMPENSATION
+    ----------------------------------------------
+    See four_band_flatness_db's docstring for why a naive recursive split
+    does not sum flat and what fixes it. In this network: band 1 (which
+    only ever sees the fc1 split) is additionally run through an allpass
+    of fc2 and then of fc3; band 2 (fc1 and fc2) is additionally run
+    through an allpass of fc3; bands 3 and 4 already carry all three
+    splits' worth of filtering and need no compensation. Every
+    compensation filter below is an INDEPENDENT instance of the same
+    coefficients as the real split it stands in for — same transfer
+    function, separate state, because it is filtering a different signal.
+    """
+
+    def __init__(self, sample_rate: int,
+                 bass_guard_db: float = DEFAULT_BASS_GUARD_DB,
+                 enabled: bool = True):
+        self.sample_rate = int(sample_rate)
+        self.enabled = bool(enabled)
+        self.bass_guard_db = min(0.0, float(bass_guard_db))
+        fs = self.sample_rate
+
+        fc1, fc2, fc3 = RADAR_MBCL_CROSSOVERS_HZ
+        self._lp1 = _lr4(fc1, fs, "low")
+        self._hp1 = _lr4(fc1, fs, "high")
+        self._lp2 = _lr4(fc2, fs, "low")
+        self._hp2 = _lr4(fc2, fs, "high")
+        self._lp3 = _lr4(fc3, fs, "low")
+        self._hp3 = _lr4(fc3, fs, "high")
+
+        # One zi state per USE of a filter. lp2/hp2 and lp3/hp3 are each
+        # used twice — once for the real split, once purely for phase
+        # compensation on an earlier band — and each use needs its own
+        # history, hence the separate keys sharing the same coefficients.
+        def z(sos):
+            return np.zeros((sos.shape[0], 2))
+        self._z = {
+            "lp1": z(self._lp1), "hp1": z(self._hp1),
+            "lp2": z(self._lp2), "hp2": z(self._hp2),      # split on high1
+            "lp2c": z(self._lp2), "hp2c": z(self._hp2),    # compensation, on low1
+            "lp3": z(self._lp3), "hp3": z(self._hp3),      # split on high2 -> band3/4
+            "lp3c1": z(self._lp3), "hp3c1": z(self._hp3),  # compensation, on low2 -> band2
+            "lp3c2": z(self._lp3), "hp3c2": z(self._hp3),  # compensation, on ap2(low1) -> band1
+        }
+
+        self._comp = [
+            _BandGain(b.comp_ratio, b.comp_threshold_db,
+                     b.lim_release_ms,  # see RADAR_MBCL_BANDS' comment
+                     b.comp_floor_db if i > 0 else self.bass_guard_db,
+                     fs)
+            for i, b in enumerate(RADAR_MBCL_BANDS)
+        ]
+        self._lim = [_band_limiter(b.lim_threshold_db, b.lim_release_ms, fs)
+                    for b in RADAR_MBCL_BANDS]
+
+    @property
+    def max_reduction_db(self) -> float:
+        """Worst reduction seen so far, across every band's compressor and
+        limiter — the instrument for whether any of this is doing
+        anything."""
+        return round(self.raw_max_reduction_db, 2)
+
+    @property
+    def raw_max_reduction_db(self) -> float:
+        """Same, full precision — what test vectors are generated from."""
+        return max(s.max_reduction_db for s in (*self._comp, *self._lim))
+
+    def set_params(self,
+                   bass_guard_db: float | None = None,
+                   enabled: bool | None = None) -> None:
+        """Change band 1's floor and/or bypass the law, without touching
+        carried filter or gain state — see BassGuard.set_params, same
+        reasoning. Bands 2-4 have no control, same as the limiter
+        override: there is nothing today to leave untouched."""
+        if bass_guard_db is not None:
+            self.bass_guard_db = min(0.0, float(bass_guard_db))
+            self._comp[0].floor_db = self.bass_guard_db
+        if enabled is not None:
+            self.enabled = bool(enabled)
+
+    def _filt(self, sos: np.ndarray, key: str, x: np.ndarray) -> np.ndarray:
+        y, self._z[key] = sosfilt(sos, x, zi=self._z[key])
+        return y
+
+    def process(self, samples: np.ndarray) -> np.ndarray:
+        """Compress one chunk. Returns exactly as many samples as given."""
+        if samples.size == 0:
+            return samples
+        x = np.asarray(samples, dtype=np.float64)
+
+        # The crossover network runs unconditionally, enabled or not — see
+        # the class docstring on BassGuard.process for why: keeping the
+        # filters warm and the output an allpass of the input either way is
+        # what makes the toggle click-free.
+        low1  = self._filt(self._lp1, "lp1", x)
+        high1 = self._filt(self._hp1, "hp1", x)
+
+        low2  = self._filt(self._lp2, "lp2", high1)
+        high2 = self._filt(self._hp2, "hp2", high1)
+
+        ap2_low1 = (self._filt(self._lp2, "lp2c", low1)
+                  + self._filt(self._hp2, "hp2c", low1))
+
+        band3_raw = self._filt(self._lp3, "lp3", high2)
+        band4_raw = self._filt(self._hp3, "hp3", high2)
+
+        band2_raw = (self._filt(self._lp3, "lp3c1", low2)
+                   + self._filt(self._hp3, "hp3c1", low2))
+        band1_raw = (self._filt(self._lp3, "lp3c2", ap2_low1)
+                   + self._filt(self._hp3, "hp3c2", ap2_low1))
+
+        # mbcl_inVol and every band's comp_inVol/lim_inVol apply EITHER
+        # WAY: they are fixed gain stages, not dynamics ones, and gating
+        # any of them on `enabled` would make the "bass guard" toggle
+        # also step the overall level by as much as 6dB (band 3's
+        # comp_inVol+lim_inVol) on top of whatever the law itself was
+        # doing — a bigger, more noticeable click than any other toggle in
+        # this chain produces. Real stock's own "mbcl_bypass" drops all of
+        # it too (bypass skips the whole block), but nothing here can
+        # toggle that flag live the way this dashboard control can, so
+        # this follows the rest of the chain's own convention instead:
+        # only the LAW engaging or not should be audible across the
+        # toggle. Only gains_db() — the compression/limiting ITSELF — is
+        # skipped while disabled, which also freezes its gain state, same
+        # as BassGuard/Limiter bypass.
+        sys_gain = 10.0 ** (RADAR_MBCL_IN_VOL_DB / 20.0)
+        out = 0.0
+        for i, (raw, spec) in enumerate(zip(
+                (band1_raw, band2_raw, band3_raw, band4_raw), RADAR_MBCL_BANDS)):
+            y = raw * sys_gain
+            if spec.comp_in_vol_db:
+                y = y * (10.0 ** (spec.comp_in_vol_db / 20.0))
+            if self.enabled:
+                y = y * (10.0 ** (self._comp[i].gains_db(y) / 20.0))
+            if spec.lim_in_vol_db:
+                y = y * (10.0 ** (spec.lim_in_vol_db / 20.0))
+            if self.enabled:
+                y = y * (10.0 ** (self._lim[i].gains_db(y) / 20.0))
+            out = out + y
+        return out

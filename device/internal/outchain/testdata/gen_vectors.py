@@ -148,7 +148,6 @@ def render(case):
     p0 = _params_at(case["schedule"], 0)
     board = case.get("board", "biscuit")
     is_radar = board == "radar"
-    crossover_hz, threshold_db = em_mbc._tuning_for(board)
 
     # Mirrors em_player.py's _limiter_params: Radar overrides the config
     # value regardless of what the schedule carries, same reason the real
@@ -163,10 +162,8 @@ def render(case):
     lim = em_limiter.Limiter(FS, threshold_db=lim_threshold_db,
                              release_ms=lim_release_ms,
                              enabled=p0["limiterEnabled"])
-    guard = em_mbc.BassGuard(FS, bass_guard_db=p0["guardDb"],
-                             enabled=p0["guardEnabled"],
-                             crossover_hz=crossover_hz,
-                             threshold_db=threshold_db)
+    guard = em_mbc.build_guard(FS, board, bass_guard_db=p0["guardDb"],
+                               enabled=p0["guardEnabled"])
     chain = em_eq.StreamingEQ(FS, p0["bands"], p0["loudness"],
                               limiter=lim, guard=guard,
                               stock_curve=p0.get("stockCurve", False))
@@ -182,7 +179,7 @@ def render(case):
         out.append(chain.process(x[c * CHUNK:(c + 1) * CHUNK].tobytes()))
     y = np.frombuffer(b"".join(out), dtype=np.int16)
     stats = {
-        "guardReductionDb": float(guard._bass.max_reduction_db),
+        "guardReductionDb": float(guard.raw_max_reduction_db),
         "limiterReductionDb": float(lim.max_reduction_db),
         "clipped": int(lim.clipped),
         "clippedBypassed": int(lim.clipped_bypassed),

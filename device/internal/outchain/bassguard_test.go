@@ -37,10 +37,26 @@ func TestRadarTuningMatchesItsOwnMeasuredConfiguration(t *testing.T) {
 }
 
 // NewForBoard must actually reach the filter design, not just the lookup
-// table above — this is what pcm_speaker.go calls in production.
+// table above — this is what pcm_speaker.go calls in production. Radar
+// gets a *radarMultiband now, not a *bassGuard (see newRadarMultiband) —
+// its band 1 compressor's threshold must still agree with
+// radarBassThresholdDb, the same measured value read twice.
 func TestNewForBoardAppliesTheBoardsTuning(t *testing.T) {
-	c := NewForBoard(48000, "radar")
-	if c.guard.thresholdDb != radarBassThresholdDb {
-		t.Errorf("guard.thresholdDb = %g, want %g", c.guard.thresholdDb, radarBassThresholdDb)
+	biscuit := NewForBoard(48000, "biscuit")
+	bg, ok := biscuit.guard.(*bassGuard)
+	if !ok {
+		t.Fatalf("biscuit's guard = %T, want *bassGuard", biscuit.guard)
+	}
+	if bg.thresholdDb != bassThresholdDb {
+		t.Errorf("guard.thresholdDb = %g, want %g", bg.thresholdDb, bassThresholdDb)
+	}
+
+	radar := NewForBoard(48000, "radar")
+	mb, ok := radar.guard.(*radarMultiband)
+	if !ok {
+		t.Fatalf("radar's guard = %T, want *radarMultiband", radar.guard)
+	}
+	if mb.comp[0].thresholdDb != radarBassThresholdDb {
+		t.Errorf("guard.comp[0].thresholdDb = %g, want %g", mb.comp[0].thresholdDb, radarBassThresholdDb)
 	}
 }

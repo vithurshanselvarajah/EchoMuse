@@ -68,6 +68,23 @@ func (p Params) String() string {
 	return fmt.Sprintf("eq=%s speech_boost=%s guard=%s limiter=%s", eqs, boost, guard, lim)
 }
 
+// bassStage is the bass-removal/multiband-compression stage between the EQ
+// and the limiter — bassGuard on every board but Radar, radarMultiband on
+// it (see newRadarMultiband's own docstring for why Radar's is a real
+// 4-band MBCL rather than the single band every other board gets). The
+// Process loop and apply() go through this interface so neither needs to
+// know which board it is on.
+type bassStage interface {
+	step(x float64) float64
+	reset()
+	setEnabled(enabled bool)
+	setFloorDb(floorDb float64)
+	// takeMaxReductionDb returns the worst reduction since the last call
+	// and clears it — read-and-reset in one so TakeStats cannot read a
+	// value from one stage and clear a different one.
+	takeMaxReductionDb() float64
+}
+
 // Chain runs EQ → bass guard → limiter on stereo S16_LE periods.
 //
 // Order is em_eq's: the guard removes excursion the driver cannot deliver,
@@ -94,7 +111,7 @@ type Chain struct {
 	// Owned by the ALSA goroutine.
 	params  Params
 	eq      eq
-	guard   *bassGuard
+	guard   bassStage
 	lim     *limiter
 	idle    bool // state is all zero and input is silence
 	running bool // active on the previous period
@@ -124,11 +141,19 @@ func New(sampleRate int) *Chain {
 // see apply.
 func NewForBoard(sampleRate int, boardID string) *Chain {
 	fs := float64(sampleRate)
+	var guard bassStage
+	if boardID == "radar" {
+		// Radar's real MBCL.cfg is a 4-band multiband compressor, not a
+		// copy of biscuit's single band — see newRadarMultiband.
+		guard = newRadarMultiband(fs)
+	} else {
+		guard = newBassGuard(fs, boardID)
+	}
 	c := &Chain{
 		fs:      fs,
 		boardID: boardID,
 		eq:      eq{fs: fs},
-		guard:   newBassGuard(fs, boardID),
+		guard:   guard,
 		lim:     newLimiter(fs),
 		idle:    true,
 	}
@@ -159,8 +184,8 @@ func (c *Chain) SetParams(p Params) {
 func (c *Chain) apply(p Params) {
 	c.params = p
 	c.eq.set(p.Bands, p.Loudness)
-	c.guard.enabled = p.GuardEnabled
-	c.guard.floorDb = math.Min(p.GuardDb, 0)
+	c.guard.setEnabled(p.GuardEnabled)
+	c.guard.setFloorDb(math.Min(p.GuardDb, 0))
 	c.lim.enabled = p.LimiterEnabled
 	limThresholdDb, limReleaseMs := p.LimiterThresholdDb, p.LimiterReleaseMs
 	if c.boardID == "radar" {
@@ -316,11 +341,11 @@ type Stats struct {
 // ALSA goroutine only.
 func (c *Chain) TakeStats() Stats {
 	s := Stats{
-		GuardReductionDb:   c.guard.maxReductionDb,
+		GuardReductionDb:   c.guard.takeMaxReductionDb(),
 		LimiterReductionDb: c.lim.maxReductionDb,
 		Clipped:            c.lim.clipped,
 		ClippedBypassed:    c.lim.clippedBypassed,
 	}
-	c.guard.maxReductionDb, c.lim.maxReductionDb = 0, 0
+	c.lim.maxReductionDb = 0
 	return s
 }

@@ -1559,12 +1559,21 @@ def get_device(device_id: str) -> Device | None:
 
 
 def _limiter_for(device):
-    """Adapter: a Device's limiter config -> em_limiter.for_stream."""
+    """Adapter: a Device's limiter config -> em_limiter.for_stream.
+
+    Radar overrides the config value regardless of what it carries, same
+    reasoning and same override as em_player.py's _limiter_params — this
+    path (voice turns and announcements) had never picked that up, so a
+    Radar device got the generic -1dB/150ms here while its music got the
+    real -3dB/20ms."""
+    threshold_db, release_ms = device.limiter_threshold, device.limiter_release
+    if device.board_id == "radar":
+        threshold_db, release_ms = em_limiter.RADAR_THRESHOLD_DB, em_limiter.RADAR_RELEASE_MS
     return em_limiter.for_stream(
         SPEAKER_RATE,
         device.limiter_enabled,
-        device.limiter_threshold,
-        device.limiter_release,
+        threshold_db,
+        release_ms,
     )
 
 
@@ -1574,6 +1583,7 @@ def _guard_for(device):
         SPEAKER_RATE,
         device.bass_guard_enabled,
         device.bass_guard_db,
+        device.board_id,
     )
 
 
