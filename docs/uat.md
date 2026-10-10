@@ -204,13 +204,17 @@ set to **On this Echo** and the other to **On the controller**.
 ### D1 · Volume
 **Do:** Enable Volume button sound. Change volume with the device's own
 buttons while idle, press Volume Up twice more after reaching maximum, then
-change it from HA; repeat both while music is playing.
+change it from HA; repeat both while music is playing. In Config → Ring,
+enable **Remote volume arc** and repeat the remote changes, including setting
+volume to zero; then send the current non-zero level again and reboot.
 **Expect:** The level agrees and survives a reboot. An idle physical-button
 change plays a short, low beep with a quick decay at the new volume, and each
-extra Volume Up press at maximum replays it; HA and active playback stay
-silent.
-**Flag:** A tone from a remote change or over playback, or no tone from an
-idle physical-button change or an extra Volume Up press at maximum.
+extra Volume Up press at maximum replays it; remote changes and active playback
+do not play the tone. Physical buttons always show the cyan arc. Changed,
+non-zero remote levels show it only while the setting is on; volume zero,
+repeated levels, and boot restoration stay silent.
+**Flag:** Any volume disagreement, an unexpected tone, or an arc for a muted,
+duplicate, or boot-restored volume.
 
 ### D2 · Speech is intelligible at low volume
 **Do:** Set volume to ~20%, ask something with a long answer.
@@ -234,12 +238,21 @@ something bass-heavy loud.
 noticeably worse.
 **Flag:** No difference with them on or off.
 
-### D6 · The headphone jack
+### D6 · Response level
+**Do:** At about 30% device volume, ask the same question at Low, Medium, and
+High response level. Repeat near maximum volume.
+**Expect:** Voice gets progressively louder at 30% without changing music or
+the device volume. Near maximum, the differences shrink; at maximum they are
+the same. No setting clips or adds a volume-ring animation.
+**Flag:** Music or device volume moving; no difference at 30%; distortion; or
+a boost that remains at maximum.
+
+### D7 · The headphone jack
 **Do:** Plug into the 3.5mm jack.
 **Expect:** Audio moves to the jack.
 **Flag:** Anything beyond the known jack faults in the table above.
 
-### D7 · Speak while the reply is written
+### D8 · Speak while the reply is written
 **Do:** Config → Playback → turn on "Speak while the reply is written" and save.
 Ask for something long ("explain in two paragraphs how a refrigerator works").
 Turn it off, save, and ask again.

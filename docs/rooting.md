@@ -275,10 +275,11 @@ The light ring says which case you are in:
 | Red, stopped | A boot stage failed | Recoverable — go to TWRP and restore |
 | One segment orbiting a full blue ring, for more than a minute | emOS never started | Go to TWRP and restore |
 
-Only the last two rows need you: restore the image from TWRP. Any other ring
-means emOS is starting, so leave it to finish (#642). The orbit means the
-kernel came up and our init never ran, so nothing on the device is going to
-fix itself — it is the kernel's own boot animation, still running because
+Restore the image from TWRP if the ring ends red and stopped, or as a single
+segment orbiting a full blue ring for more than a minute. Anything else means
+emOS is starting, so leave it to finish (#642). The orbit means the kernel
+came up and our init never ran, so nothing on the device is going to fix
+itself — it is the kernel's own boot animation, still running because
 userspace never claimed the ring.
 
 The amber row is worth knowing about precisely so you *do not* intervene:

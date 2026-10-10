@@ -184,6 +184,10 @@ DEFAULT_DEVICE_CONFIG = {
     # cannot perform. A taste parameter — it wants tuning by ear in a real
     # room, like the LED meter curve, not a firmware push per attempt.
     "duckDb": -18.0,
+    # Voice-response gain relative to the device volume. Firmware maps
+    # low / medium / high to 0 / +6 / +12dB before mixing with music, then
+    # tapers the boost near maximum so combined gain never exceeds unity.
+    "responseLevel":   "low",
     # streamReply: start speaking when Home Assistant says the reply's first
     # text has arrived (its tts_start_streaming signal) instead of when the whole
     # reply is done. Default OFF: it is faster when the model and the TTS engine
@@ -272,6 +276,9 @@ DEFAULT_DEVICE_CONFIG = {
     # behind it and False is the one that has not been run in months.
     "beamformingEnabled": True,
     "beamAngle":        -1,
+    # wakeMic: which mic the wake word listens on. 0 = centre (default),
+    # 1-6 = perimeter MK1-MK6. For a dead centre mic only (#705).
+    "wakeMic":          0,
     "eqBands":          [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
     "eqLoudness":       False,
     # Output limiter. On by default: the EQ chain hard-clipped anything it
@@ -291,6 +298,10 @@ DEFAULT_DEVICE_CONFIG = {
     "ledScene":         "standard",
     "ledListenColor":   "#00b400",
     "ledThinkColor":    "#00c800",
+    # Opt-in accessibility feedback for volume changes made from HA, the
+    # dashboard, automations, or another remote source. Physical buttons show
+    # the cyan arc regardless; mute and boot restore stay silent.
+    "remoteVolumeArc":  False,
     # Playback "meter" ring response curve — how hard the ring throbs with
     # the speaker level. Device-side defaults live in animator.go
     # (meterDefaults) and these mirror them; both are clamped independently.
@@ -1916,6 +1927,45 @@ def get_device_config(device_id: str) -> dict:
         return dict(DEFAULT_DEVICE_CONFIG)
 
 
+# Devices HA's wake word picker has turned off (#286). Stored because HA
+# never sends the picker's state back. Not a config key: a dashboard save
+# would overwrite it with whatever that page last loaded.
+_WAKE_WORD_OFF_KEY = "wake_word_off"
+
+
+def _wake_word_off_ids(conn: sqlite3.Connection) -> list[str]:
+    row = conn.execute(
+        "SELECT value FROM system_config WHERE key = ?", (_WAKE_WORD_OFF_KEY,)
+    ).fetchone()
+    if row is None or not row["value"]:
+        return []
+    try:
+        ids = json.loads(row["value"])
+    except (json.JSONDecodeError, TypeError):
+        log.warning("[db] Invalid wake_word_off JSON — treating every device as on")
+        return []
+    return [i for i in ids if isinstance(i, str)] if isinstance(ids, list) else []
+
+
+def get_wake_word_enabled(device_id: str) -> bool:
+    """Whether HA's picker leaves this device's wake word on. Default on."""
+    assert _conn is not None, "db.init() has not been called"
+    with _db_lock:
+        return device_id not in _wake_word_off_ids(_conn)
+
+
+def set_wake_word_enabled(device_id: str, enabled: bool) -> None:
+    """Record HA's picker choice for this device. Read-modify-write in one tx."""
+    with _tx() as conn:
+        ids = [i for i in _wake_word_off_ids(conn) if i != device_id]
+        if not enabled:
+            ids.append(device_id)
+        conn.execute(
+            "INSERT OR REPLACE INTO system_config (key, value) VALUES (?, ?)",
+            (_WAKE_WORD_OFF_KEY, json.dumps(sorted(ids))),
+        )
+
+
 def get_global_device_config() -> dict:
     """
     Return the fleet-wide default device config.
@@ -2125,6 +2175,8 @@ def delete_device(device_id: str) -> None:
         conn.execute("DELETE FROM device_boots WHERE device_id = ?", (device_id,))
         conn.execute("DELETE FROM device_wear WHERE device_id = ?", (device_id,))
         conn.execute("DELETE FROM devices WHERE device_id = ?", (device_id,))
+    # A re-added device is new to HA, so it starts listening.
+    set_wake_word_enabled(device_id, True)
     try:
         removed = em_recordings.delete_device(device_id)
         if removed:

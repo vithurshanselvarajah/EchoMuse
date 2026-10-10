@@ -599,6 +599,8 @@ func main() {
 	// the (partial) message so unmentioned fields keep their values.
 	controlClient.OnConfigApplied(func(msg config.ConfigMessage) {
 		applyHardwareConfig(msg)
+		s.SetRemoteVolumeArc(config.Get().RemoteVolumeArcEnabled())
+		pcmSpeaker.SetResponseGainDB(config.Get().ResponseGainDB())
 		// The merged config, not the partial message, for the reason given
 		// above. Active is re-read from the ack on every push: a reconnect
 		// can land on a controller that does not hand the chain over.
@@ -1445,6 +1447,11 @@ func onWakeCrossing(cc *client.ControlClient, dc *client.DataClient,
 		// not become a turn.
 		cc.SendOwwShadowCross(score, ageMs)
 		log.Printf("[shadow] wake %.3f suppressed — muted", score)
+		return
+	}
+	if !config.Get().WakeWordOn() {
+		cc.SendOwwShadowCross(score, ageMs)
+		log.Printf("[shadow] wake %.3f suppressed — wake word off", score)
 		return
 	}
 	var session uint32
