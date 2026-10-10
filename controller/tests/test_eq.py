@@ -212,3 +212,14 @@ def test_chain_without_a_volume_keeps_eq50():
     if eq._fir is None:
         pytest.skip("radar_eq_taps.json not present")
     assert eq._fir_bounds is None and len(eq._fir._hs) == 1
+
+
+def test_chain_that_takes_the_volume_rounds_to_s16():
+    """Radar's volume sits ahead of the stages, so the lowest steps leave a few
+    LSB of signal; truncating toward zero lost ~6dB of it and zeroed anything
+    under 1 LSB. The cast rounds (half to even) there and truncates elsewhere."""
+    x = np.array([0.4, 0.6, 1.5, 2.5, -0.6, -1.6, 40000.0, -40000.0])
+    r = np.frombuffer(em_eq._to_int16(x, True), np.int16)
+    t = np.frombuffer(em_eq._to_int16(x, False), np.int16)
+    assert list(r) == [0, 1, 2, 2, -1, -2, 32767, -32768]
+    assert list(t) == [0, 0, 1, 2, 0, -1, 32767, -32768]

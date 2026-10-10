@@ -457,6 +457,19 @@ def apply(
     return np.clip(samples, -32768, 32767).astype(np.int16).tobytes()
 
 
+def _to_int16(samples: np.ndarray, rounded: bool) -> bytes:
+    """The chain's cast to S16. A chain that takes the volume (Radar) ROUNDS:
+    its volume sits ahead of the stages, so at the lowest steps (down to
+    -62dB) the whole signal is a few LSB, and truncating toward zero costs
+    about 6dB of signal-to-error on top of the 16-bit floor and zeroes
+    anything under 1 LSB. Round half to even (np.rint), as the device's
+    math.RoundToEven; every other board keeps the truncating cast."""
+    x = np.clip(samples, -32768, 32767)
+    if rounded:
+        x = np.rint(x)
+    return x.astype(np.int16).tobytes()
+
+
 class StreamingEQ:
     """
     Chunk-by-chunk EQ with filter state carried across calls — for audio
@@ -661,7 +674,7 @@ class StreamingEQ:
             samples = self._limiter.process(samples)
         if self._fir is not None:
             samples = samples * self._trim   # OutputTrim: after MBCL's limiter
-        return np.clip(samples, -32768, 32767).astype(np.int16).tobytes()
+        return _to_int16(samples, self._vol_target is not None)
 
     def flush(self) -> bytes:
         """
@@ -684,7 +697,7 @@ class StreamingEQ:
             return b""
         if self._fir is not None:
             tail = tail * self._trim
-        return np.clip(tail, -32768, 32767).astype(np.int16).tobytes()
+        return _to_int16(tail, self._vol_target is not None)
 
 
 class Passthrough:

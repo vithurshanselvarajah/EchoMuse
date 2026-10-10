@@ -393,6 +393,13 @@ func (c *Chain) Process(buf []byte) (applied *Params) {
 		} else if x < -fullScale {
 			x = -fullScale
 		}
+		// A chain that takes the volume (Radar) rounds: at the lowest steps
+		// (-62dB) the whole signal is a few LSB, and truncating toward zero
+		// costs ~6dB of signal-to-error and zeroes anything under 1 LSB.
+		// Round half to even, as em_eq._to_int16's np.rint.
+		if c.takesVolume {
+			x = math.RoundToEven(x)
+		}
 		s := int16(x)
 		if s != 0 {
 			silentOut = false
