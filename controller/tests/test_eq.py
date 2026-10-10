@@ -125,24 +125,43 @@ def _level_gain(level):
     return 0.0 if level == 0 else 10 ** ((level - 127) / 40)
 
 
-@pytest.mark.parametrize("level,band", [
-    (0, 0), (47, 0), (81, 0), (82, 1), (93, 1), (94, 2),
-    (101, 2), (102, 3), (110, 3), (111, 4), (127, 4),
+@pytest.mark.parametrize("level,value,band", [
+    (0, 0, 0), (3, 1, 0), (37, 10, 0), (38, 11, 0), (77, 50, 0), (78, 51, 1),
+    (87, 60, 1), (88, 61, 2), (97, 70, 2), (98, 71, 3), (107, 80, 3),
+    (108, 81, 4), (127, 100, 4),
 ])
-def test_radar_eq_band_by_volume(level, band):
+def test_radar_eq_band_by_volume(level, value, band):
     """Pinned against the same table as the Go test, so the two ends cannot
-    pick different curves at the same volume. Levels 93 and 110 land exactly
-    on index 60 and 80 and must take that boundary's own file."""
-    assert em_eq.radar_eq_band(_level_gain(level), [50, 60, 70, 80, 100]) == band
+    pick different curves at the same volume. A level on a boundary takes
+    that boundary's own file, as libasp does."""
+    g = _level_gain(level)
+    assert em_eq.stock_volume_value(g) == value
+    assert em_eq.radar_eq_band(g, [50, 60, 70, 80, 100]) == band
 
 
-def test_stock_volume_index_follows_the_speaker_curve():
-    # The curve's own points come back as themselves.
-    for idx, att in em_eq.SPEAKER_MUSIC_CURVE:
-        assert em_eq.stock_volume_index(10 ** (att / 20)) == pytest.approx(idx)
-    assert em_eq.stock_volume_index(0.0) == 0.0
-    assert em_eq.stock_volume_index(1e-6) == 1.0     # below the curve: index 1
-    assert em_eq.stock_volume_index(2.0) == 100.0    # above unity: index 100
+def test_stock_mixer_levels_are_what_bin_mixer_holds():
+    """The table read out of stock's /system/bin/mixer: 101 levels, 0.5dB
+    per step, 127 = 0dB, value + 27 from value 11 up. It reproduces
+    StandAloneAAModules.cfg's music_volTab at every Alexa step."""
+    t = em_eq.STOCK_MIXER_LEVELS
+    assert t[:11] == (0, 3, 7, 11, 17, 20, 27, 30, 32, 35, 36)
+    assert all(t[v] == v + 27 for v in range(11, 101))
+    volume_curve = [0, 1, 2, 3, 4, 6, 11, 16, 22, 28, 34, 40, 44, 46, 50, 54,
+                    56, 60, 64, 68, 70, 72, 76, 80, 84, 88, 90, 92, 96, 98, 100]
+    music_voltab = [-62.0, -60.2, -58.1, -55.0, -50.1, -44.5, -42.0, -39.0,
+                    -36.0, -33.0, -30.0, -28.0, -27.0, -25.0, -23.0, -22.0,
+                    -20.0, -18.0, -16.0, -15.0, -14.0, -12.0, -10.0, -8.0,
+                    -6.0, -5.0, -4.0, -2.0, -1.0, 0.0]
+    # Steps 1..30. The mixer's levels are whole 0.5dB steps, so the table's
+    # fractional low end (-60.2, -58.1, -50.1) agrees to within one step.
+    for step in range(1, 31):
+        db = (t[volume_curve[step]] - 127) / 2
+        assert abs(db - music_voltab[step - 1]) <= 1.0, step
+
+
+def test_stock_volume_value_is_level_minus_27_from_38_up():
+    for level in range(38, 128):
+        assert em_eq.stock_volume_value(_level_gain(level)) == level - 27
 
 
 def test_radar_banded_files_are_a_loudness_compensation():

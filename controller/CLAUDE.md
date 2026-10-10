@@ -851,11 +851,17 @@ hardware.
 for its volume** (2026-10-10). `EQ_50/60/70/80/100.cfg` off a Radar boost
 80Hz by +10.1/–/–/+5.4/+1.4dB: a loudness compensation, the bass boost backing
 off as the volume rises. `AFE.cfg`'s `"Volume Boundary": [50,60,70,80,100]`
-selects them on Android's 0–100 volume index; we recover that index from the
-volume's attenuation through the speaker music curve in
-`audio_policy_volumes.xml` (`em_eq.stock_volume_index`, mirrored in
-`outchain`), since that curve is what turned stock's index into the
-attenuation. Only a chain that takes the volume (`volume_gain`, Radar on the
+selects them on stock's 0–100 MUSIC VOLUME VALUE, the number
+`libaudioCtrl` reads per Alexa step from `VolumeCurves.xml` and the mixer
+daemon hands `libasp`; `libasp` plays the first file whose boundary is at or
+above it. We recover that value from the volume through
+`em_eq.STOCK_MIXER_LEVELS` (mirrored in `outchain`), the per-value attenuation
+read out of `/system/bin/mixer` — our own law, 0.5dB per step with 127 = 0dB,
+and `value + 27` from value 11 up — so from level 38 up the value is simply
+`level − 27`. It first went through Android's speaker volume curve
+(`audio_policy_volumes.xml`), which stock does not use for Alexa audio; that
+put levels 78–81, 88–93, 98–101 and 108–110 one bassier file down.
+Only a chain that takes the volume (`volume_gain`, Radar on the
 device) can select; the controller-side chain has no volume and keeps
 `EQ_50`. A switch crossfades across one period — both curves filter the same
 input history, so it is a change of curve and not of signal.

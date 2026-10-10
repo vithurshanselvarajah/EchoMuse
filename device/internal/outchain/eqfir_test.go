@@ -159,9 +159,9 @@ func TestLoadRadarEQBandsFromEmbed(t *testing.T) {
 	}
 }
 
-// The volume index is recovered through Android's speaker curve, and a
-// level landing exactly on a boundary must resolve to that boundary's own
-// band — the same answers em_eq.radar_eq_band gives, pinned on both sides.
+// The volume value comes from stock's mixer table, and a level landing on a
+// boundary takes that boundary's own file — the same table as
+// em_eq's test, pinned on both sides.
 func TestRadarEQBandByVolume(t *testing.T) {
 	bounds := []float64{50, 60, 70, 80, 100}
 	gain := func(level int) float64 {
@@ -170,13 +170,27 @@ func TestRadarEQBandByVolume(t *testing.T) {
 		}
 		return math.Pow(10, float64(level-127)/40)
 	}
-	for _, tc := range []struct{ level, band int }{
-		{0, 0}, {47, 0}, {81, 0}, {82, 1}, {93, 1}, {94, 2},
-		{101, 2}, {102, 3}, {110, 3}, {111, 4}, {127, 4},
+	for _, tc := range []struct{ level, value, band int }{
+		{0, 0, 0}, {3, 1, 0}, {37, 10, 0}, {38, 11, 0}, {77, 50, 0}, {78, 51, 1},
+		{87, 60, 1}, {88, 61, 2}, {97, 70, 2}, {98, 71, 3}, {107, 80, 3},
+		{108, 81, 4}, {127, 100, 4},
 	} {
+		if got := stockVolumeValue(gain(tc.level)); got != tc.value {
+			t.Errorf("level %d: value %d, want %d", tc.level, got, tc.value)
+		}
 		if got := radarEQBand(gain(tc.level), bounds); got != tc.band {
-			t.Errorf("level %d: band %d, want %d (index %g)",
-				tc.level, got, tc.band, stockVolumeIndex(gain(tc.level)))
+			t.Errorf("level %d: band %d, want %d", tc.level, got, tc.band)
+		}
+	}
+}
+
+// From value 11 up, stock's mixer level is value + 27, so the value of every
+// level from 38 up is level - 27, with no off-by-one at either end.
+func TestStockVolumeValueIsLevelMinus27(t *testing.T) {
+	for level := 38; level <= 127; level++ {
+		g := math.Pow(10, float64(level-127)/40)
+		if v := stockVolumeValue(g); v != level-27 {
+			t.Fatalf("level %d: value %d, want %d", level, v, level-27)
 		}
 	}
 }

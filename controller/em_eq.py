@@ -169,47 +169,51 @@ def _radar_eq_taps() -> np.ndarray | None:
 # they are five different curves — a loudness compensation, not one curve at
 # five gains (that was biscuit's EQ files). EQ_50 boosts 80Hz by +10.1dB,
 # EQ_80 by +5.4dB, EQ_100 by +1.4dB, so the bass boost backs off as the
-# volume goes up and MBCL has less to hold down. Selected by the volume
-# index the boundaries are written in (0-100), recovered from the volume's
-# attenuation through Android's speaker music curve (audio_policy_volumes.xml
-# DEFAULT_DEVICE_CATEGORY_SPEAKER_VOLUME_CURVE) — the same curve that turned
-# stock's index into that attenuation. A file at index b serves every index
-# up to and including b.
+# volume goes up and MBCL has less to hold down.
+#
+# The boundaries are on stock's 0-100 MUSIC VOLUME VALUE: libaudioCtrl maps
+# each Alexa step to it (VolumeCurves.xml), the mixer daemon turns it into an
+# attenuation and sends it to libasp as the Music volume, and libasp plays the
+# first file whose boundary is >= it. The attenuation is STOCK_MIXER_LEVELS,
+# read out of /system/bin/mixer (Mixer_AlgoRampGain): a level in the same law
+# as ours — 0.5dB per step, 127 = 0dB — for each value 0..100. So the value
+# for a volume is recovered by finding where our level falls in that table;
+# from value 11 up the table is simply value + 27. (This replaced a mapping
+# through Android's speaker volume curve, which stock does not use for Alexa
+# audio at all — it put levels 78-81, 88-93, 98-101 and 108-110 one bassier
+# file down.)
 _RADAR_EQ_BANDED_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                      "radar_eq_banded.json")
 _radar_eq_banded_cache: tuple[list, list] | None = None
 
-# (index, attenuation dB) — linear in dB between points, as Android
-# interpolates a volume curve.
-SPEAKER_MUSIC_CURVE = ((1, -58.0), (20, -40.0), (60, -17.0), (100, 0.0))
+STOCK_MIXER_LEVELS = (
+    0, 3, 7, 11, 17, 20, 27, 30, 32, 35, 36,
+    *range(38, 128),            # values 11..100: value + 27
+)
+assert len(STOCK_MIXER_LEVELS) == 101
 
 
-def stock_volume_index(gain: float) -> float:
-    """The 0-100 volume index stock would have been at to attenuate by
-    `gain`. Rounded to 1e-6 (half up) so an attenuation that lands exactly on
-    a boundary resolves the same way here and on the device."""
+def stock_volume_value(gain: float) -> int:
+    """Stock's 0-100 music volume value for a linear volume gain: the
+    highest value whose mixer level is at or below ours. A gain is always
+    one of the device's own levels (0.5dB steps), so the level is recovered
+    exactly; the 1e-6 absorbs the round trip through log10."""
     if gain <= 0.0:
-        return 0.0
-    att = 20.0 * math.log10(gain)
-    pts = SPEAKER_MUSIC_CURVE
-    if att >= pts[-1][1]:
-        idx = float(pts[-1][0])
-    elif att <= pts[0][1]:
-        idx = float(pts[0][0])
-    else:
-        idx = float(pts[-1][0])
-        for (i0, a0), (i1, a1) in zip(pts, pts[1:]):
-            if att <= a1:
-                idx = i0 + (att - a0) / (a1 - a0) * (i1 - i0)
-                break
-    return math.floor(idx * 1e6 + 0.5) / 1e6
+        return 0
+    level = 127.0 + 40.0 * math.log10(gain)
+    value = 0
+    for v, lv in enumerate(STOCK_MIXER_LEVELS):
+        if lv <= level + 1e-6:
+            value = v
+    return value
 
 
 def radar_eq_band(gain: float, boundaries) -> int:
-    """Which of the banded FIRs stock plays at this volume gain."""
-    idx = stock_volume_index(gain)
+    """Which of the banded FIRs stock plays at this volume gain: the first
+    whose boundary is at or above the volume value (libasp's own rule)."""
+    value = stock_volume_value(gain)
     for i, b in enumerate(boundaries):
-        if idx <= b:
+        if value <= b:
             return i
     return len(boundaries) - 1
 

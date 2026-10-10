@@ -49,45 +49,46 @@ func loadRadarEQBands() ([][]float64, []float64) {
 	return radarEQBands, radarEQBoundaries
 }
 
-// speakerMusicCurve is Android's speaker music volume curve
-// (audio_policy_volumes.xml, DEFAULT_DEVICE_CATEGORY_SPEAKER_VOLUME_CURVE):
-// index 0-100 against attenuation in dB, linear in dB between points. The
-// same curve turned stock's volume index into an attenuation, so it is the
-// one that turns ours back into an index.
-var speakerMusicCurve = [][2]float64{{1, -58}, {20, -40}, {60, -17}, {100, 0}}
+// stockMixerLevels is stock's attenuation for each 0-100 music volume value,
+// read out of /system/bin/mixer (Mixer_AlgoRampGain): a level in our own law,
+// 0.5dB per step with 127 = 0dB. From value 11 up it is value + 27. It is how
+// a volume is turned back into the value AFE.cfg's "Volume Boundary" is
+// written in — em_eq.STOCK_MIXER_LEVELS, which this mirrors. (Android's
+// speaker volume curve, used before, is not on stock's Alexa audio path.)
+var stockMixerLevels = func() [101]float64 {
+	var t [101]float64
+	copy(t[:], []float64{0, 3, 7, 11, 17, 20, 27, 30, 32, 35, 36})
+	for v := 11; v <= 100; v++ {
+		t[v] = float64(v + 27)
+	}
+	return t
+}()
 
-// stockVolumeIndex is the 0-100 volume index stock would have been at to
-// attenuate by gain — em_eq.stock_volume_index. Rounded half up to 1e-6, so
-// an attenuation exactly on a boundary resolves the same way at both ends.
-func stockVolumeIndex(gain float64) float64 {
+// stockVolumeValue is stock's 0-100 music volume value for a linear volume
+// gain: the highest value whose mixer level is at or below ours —
+// em_eq.stock_volume_value. A gain is always one of the device's own levels,
+// so the level comes back exactly; the 1e-6 absorbs the round trip.
+func stockVolumeValue(gain float64) int {
 	if gain <= 0 {
 		return 0
 	}
-	att := 20 * math.Log10(gain)
-	pts := speakerMusicCurve
-	idx := pts[len(pts)-1][0]
-	switch {
-	case att >= pts[len(pts)-1][1]:
-	case att <= pts[0][1]:
-		idx = pts[0][0]
-	default:
-		for k := 0; k+1 < len(pts); k++ {
-			i0, a0, i1, a1 := pts[k][0], pts[k][1], pts[k+1][0], pts[k+1][1]
-			if att <= a1 {
-				idx = i0 + (att-a0)/(a1-a0)*(i1-i0)
-				break
-			}
+	level := 127 + 40*math.Log10(gain)
+	value := 0
+	for v, lv := range stockMixerLevels {
+		if lv <= level+1e-6 {
+			value = v
 		}
 	}
-	return math.Floor(idx*1e6+0.5) / 1e6
+	return value
 }
 
 // radarEQBand is which banded FIR stock plays at this volume gain: the
-// first whose boundary is at or above the index — em_eq.radar_eq_band.
+// first whose boundary is at or above the volume value (libasp's own rule)
+// — em_eq.radar_eq_band.
 func radarEQBand(gain float64, boundaries []float64) int {
-	idx := stockVolumeIndex(gain)
+	value := float64(stockVolumeValue(gain))
 	for i, b := range boundaries {
-		if idx <= b {
+		if value <= b {
 			return i
 		}
 	}
