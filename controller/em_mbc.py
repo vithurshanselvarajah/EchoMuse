@@ -386,6 +386,127 @@ def _band_limiter(threshold_db: float, release_ms: float, fs: int) -> "_BandGain
     return _BandGain(_INFINITE_RATIO, threshold_db, release_ms, -math.inf, fs)
 
 
+def _f32(hexbits: str) -> float:
+    """A float32 constant read out of libasp.so, as the float64 it widens to.
+    Both halves of the port use the same bits (device/internal/outchain
+    mirrors these with math.Float32frombits), so the constant cannot be the
+    reason they disagree."""
+    import struct
+    return struct.unpack(">f", bytes.fromhex(hexbits))[0]
+
+
+# Stock's MBCL band compressor, decoded from Radar's libasp.so (class ctor
+# 0xecea0, process 0xed168, gate 0xed018, gain computer 0xed0a8, reset
+# 0xed44c), 2026-10-10. It is NOT the peak detector with instant attack that
+# _BandGain is, and that difference is the "muddy" bass: stock measures POWER
+# over 1ms blocks, smooths it (attack ~43ms, release ~435ms), smooths the
+# GAIN again (~654ms, both directions), and applies it to audio delayed 16ms
+# so the gain arrives ahead of the transient. A per-sample peak compressor at
+# 10:1 on 70-200Hz pumps on every kick; stock's barely moves within a beat.
+STOCK_COMP_BLOCK_MS = 1          # block = fs/1000 samples (48 at 48kHz)
+STOCK_COMP_DELAY = 768           # 16ms look-ahead ring, fixed in samples
+_COMP_GATE_FAST   = _f32("3c2aaaab")   # 1/96: fast power smoother A
+_COMP_FLOOR_UP    = _f32("382ec33e")   # floor tracker B rises this slowly
+_COMP_FLOOR_DOWN  = _f32("39da740e")   # ...and falls this fast
+_COMP_GATE_RATIO  = _f32("3916feb5")   # level moves only if A > B * this (-38.4dB)
+_COMP_ATTACK      = _f32("3cbbbbbc")   # level smoother, rising (~43ms)
+_COMP_RELEASE     = _f32("3b162fc9")   # level smoother, falling (~435ms)
+_COMP_GAIN_SMOOTH = _f32("3ac83fb7")   # gain smoother, both ways (~654ms)
+_COMP_INIT        = _f32("3c23d70a")   # 0.01: A, B and the level at reset
+_COMP_IN_VOL_MIN, _COMP_IN_VOL_MAX = _f32("3dcccccd"), _f32("40b3f300")
+
+
+class StockCompressor:
+    """
+    One MBCL band compressor exactly as stock runs it, in S16 units.
+
+    Per 1ms block: y = x * inVol; P = mean(y^2) on full-scale-normalised
+    samples; a gate (A fast, B a slow floor) decides whether the level L may
+    move toward P; the gain computer turns L into g (ratio above a power
+    threshold, never below gainMin); G eases toward g; the block's output is
+    G times y delayed 768 samples.
+
+    Streaming adds ONE block of latency on top of stock's 16ms: the block's
+    gain needs the whole block, and chunks here do not land on block
+    boundaries, so output is held one block (48 samples). Every band carries
+    the same delay, so the sum stays aligned. Pure Python per block (1000/s)
+    — cheap enough; Radar runs this on the device anyway (output_chain).
+
+    Bypass (enabled=False) keeps the delay and the trim and freezes the
+    dynamics, so the bass guard toggle cannot misalign the bands or click.
+    """
+
+    def __init__(self, sample_rate: int, ratio: float, threshold_db: float,
+                 floor_db: float, in_vol_db: float = 0.0, enabled: bool = True):
+        self.block = int(sample_rate) * STOCK_COMP_BLOCK_MS // 1000
+        self.latency = STOCK_COMP_DELAY + self.block
+        self.enabled = bool(enabled)
+        self._pow_scale = 1.0 / (self.block * _FULL_SCALE * _FULL_SCALE)
+        ratio = min(max(float(ratio), 1.0), 20.0)
+        self._k_half = (1.0 - 1.0 / ratio) * 0.5
+        self._tpow = 10.0 ** (min(max(float(threshold_db), -90.0), 0.0) / 10.0)
+        self.set_floor_db(floor_db)
+        self._in_vol = min(max(10.0 ** (float(in_vol_db) / 20.0),
+                               _COMP_IN_VOL_MIN), _COMP_IN_VOL_MAX)
+        self.min_gain = 1.0
+        self.reset()
+
+    def set_floor_db(self, floor_db: float) -> None:
+        self.floor_db = min(max(float(floor_db), -40.0), 0.0)
+        self._floor = 10.0 ** (self.floor_db / 20.0)
+
+    def reset(self) -> None:
+        self._a = self._b = self._level = _COMP_INIT
+        self._gain = 1.0
+        self._ring = np.zeros(STOCK_COMP_DELAY)
+        self._pending = np.zeros(0)
+        self._fifo = np.zeros(self.block)
+
+    @property
+    def max_reduction_db(self) -> float:
+        return -20.0 * math.log10(self.min_gain)
+
+    def _block(self, xb: np.ndarray) -> np.ndarray:
+        y = xb * self._in_vol
+        delayed = self._ring[:self.block]
+        self._ring = np.concatenate((self._ring[self.block:], y))
+        if not self.enabled:
+            return delayed
+        p = np.cumsum(y * y)[-1] * self._pow_scale   # sequential, as the Go
+        a = self._a + _COMP_GATE_FAST * (p - self._a)
+        b = self._b
+        b = b + (_COMP_FLOOR_DOWN if a < b else _COMP_FLOOR_UP) * (a - b)
+        self._a, self._b = a, b
+        lvl = self._level
+        if a > b * _COMP_GATE_RATIO:
+            lvl = lvl + (_COMP_ATTACK if lvl < p else _COMP_RELEASE) * (p - lvl)
+            self._level = lvl
+        if lvl <= self._tpow:
+            g = 1.0
+        else:
+            g = (self._tpow / lvl) ** self._k_half
+            if g <= self._floor:
+                g = self._floor
+        gain = self._gain + _COMP_GAIN_SMOOTH * (g - self._gain)
+        self._gain = gain
+        if gain < self.min_gain:
+            self.min_gain = gain
+        return gain * delayed
+
+    def process(self, x: np.ndarray) -> np.ndarray:
+        """Exactly as many samples out as in, delayed by `latency`."""
+        n = x.size
+        buf = np.concatenate((self._pending, x))
+        nb = buf.size // self.block
+        outs = [self._fifo]
+        for k in range(nb):
+            outs.append(self._block(buf[k * self.block:(k + 1) * self.block]))
+        self._pending = buf[nb * self.block:]
+        fifo = np.concatenate(outs)
+        self._fifo = fifo[n:]
+        return fifo[:n]
+
+
 def four_band_flatness_db(crossovers_hz: tuple[float, float, float] = RADAR_MBCL_CROSSOVERS_HZ,
                           fs: int = 48000) -> float:
     """
@@ -487,13 +608,18 @@ class RadarMultiband:
             "lp3c2": z(self._lp3), "hp3c2": z(self._hp3),  # compensation, on ap2(low1) -> band1
         }
 
+        # Stock's own compressor (StockCompressor); its time constants are
+        # libasp's, so the "comp_release" the config never names is no
+        # longer a guess.
         self._comp = [
-            _BandGain(b.comp_ratio, b.comp_threshold_db,
-                     b.lim_release_ms,  # see RADAR_MBCL_BANDS' comment
-                     b.comp_floor_db if i > 0 else self.bass_guard_db,
-                     fs)
+            StockCompressor(fs, b.comp_ratio, b.comp_threshold_db,
+                            b.comp_floor_db if i > 0 else self.bass_guard_db,
+                            in_vol_db=b.comp_in_vol_db, enabled=self.enabled)
             for i, b in enumerate(RADAR_MBCL_BANDS)
         ]
+        # Samples the bands are delayed by (stock's look-ahead plus one
+        # block of streaming), so a one-shot or a flush can drain it.
+        self.latency = self._comp[0].latency
         self._lim = [_band_limiter(b.lim_threshold_db, b.lim_release_ms, fs)
                     for b in RADAR_MBCL_BANDS]
 
@@ -518,9 +644,11 @@ class RadarMultiband:
         override: there is nothing today to leave untouched."""
         if bass_guard_db is not None:
             self.bass_guard_db = min(0.0, float(bass_guard_db))
-            self._comp[0].floor_db = self.bass_guard_db
+            self._comp[0].set_floor_db(self.bass_guard_db)
         if enabled is not None:
             self.enabled = bool(enabled)
+            for c in self._comp:
+                c.enabled = self.enabled
 
     def _filt(self, sos: np.ndarray, key: str, x: np.ndarray) -> np.ndarray:
         y, self._z[key] = sosfilt(sos, x, zi=self._z[key])
@@ -571,11 +699,7 @@ class RadarMultiband:
         out = 0.0
         for i, (raw, spec) in enumerate(zip(
                 (band1_raw, band2_raw, band3_raw, band4_raw), RADAR_MBCL_BANDS)):
-            y = raw * sys_gain
-            if spec.comp_in_vol_db:
-                y = y * (10.0 ** (spec.comp_in_vol_db / 20.0))
-            if self.enabled:
-                y = y * (10.0 ** (self._comp[i].gains_db(y) / 20.0))
+            y = self._comp[i].process(raw * sys_gain)   # comp_inVol inside
             if spec.lim_in_vol_db:
                 y = y * (10.0 ** (spec.lim_in_vol_db / 20.0))
             if self.enabled:

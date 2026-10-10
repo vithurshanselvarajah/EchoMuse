@@ -62,7 +62,14 @@ func TestBandLimiterDegeneratesCorrectly(t *testing.T) {
 func TestRadarMultibandQuietSignalEngagesNoLaw(t *testing.T) {
 	m := newRadarMultiband(48000)
 	m.enabled = true
-	for i := 0; i < 4800; i++ {
+	// Stock seeds every band's level at 0.01 (-20dB power), over band 1's
+	// -25dB threshold, so a fresh compressor reduces briefly while that
+	// level falls and its gain eases back (~654ms). That is stock's own
+	// start; the claim is about the steady state after it.
+	for i := 0; i < 6*48000; i++ {
+		if i == 5*48000 {
+			m.takeMaxReductionDb()
+		}
 		// Very quiet relative to every threshold (-40dB floor, -25..-10dB
 		// thresholds): 1000Hz at roughly -60dBFS.
 		x := 32.0 * math.Sin(2*math.Pi*1000*float64(i)/48000)
@@ -87,7 +94,7 @@ func TestRadarMultibandLoudBassEngagesBandOne(t *testing.T) {
 			peakOut = a
 		}
 	}
-	if r := m.comp[0].maxReductionDb; r < 10.0 {
+	if r := m.comp[0].takeMaxReductionDb(); r < 10.0 {
 		t.Errorf("band 1 compressor max reduction = %gdB, want well over 10dB on a loud 50Hz tone", r)
 	}
 	if peakOut >= 30000.0 {
@@ -104,17 +111,17 @@ func TestRadarMultibandDisableFreezesGainState(t *testing.T) {
 	for i := 0; i < 4800; i++ {
 		m.step(30000.0 * math.Sin(2*math.Pi*50*float64(i)/48000))
 	}
-	gainBefore := m.comp[0].gainDb
-	if gainBefore == 0 {
+	gainBefore := m.comp[0].gain
+	if gainBefore == 1 {
 		t.Fatal("band 1 compressor never engaged — nothing to freeze")
 	}
 	m.setEnabled(false)
 	for i := 0; i < 100; i++ {
 		m.step(0)
 	}
-	if m.comp[0].gainDb != gainBefore {
-		t.Errorf("gainDb drifted from %g to %g while disabled, want frozen",
-			gainBefore, m.comp[0].gainDb)
+	if m.comp[0].gain != gainBefore {
+		t.Errorf("gain drifted from %g to %g while disabled, want frozen",
+			gainBefore, m.comp[0].gain)
 	}
 }
 
@@ -154,8 +161,8 @@ func TestRadarMultibandResetClearsEveryFilter(t *testing.T) {
 		}
 	}
 	for i := range m.comp {
-		if m.comp[i].gainDb != 0 {
-			t.Errorf("comp[%d].gainDb = %g after reset, want 0", i, m.comp[i].gainDb)
+		if m.comp[i].gain != 1 || m.comp[i].level != compInit {
+			t.Errorf("comp[%d] gain=%g level=%g after reset, want stock's 1 and 0.01", i, m.comp[i].gain, m.comp[i].level)
 		}
 		if m.lim[i].gainDb != 0 {
 			t.Errorf("lim[%d].gainDb = %g after reset, want 0", i, m.lim[i].gainDb)

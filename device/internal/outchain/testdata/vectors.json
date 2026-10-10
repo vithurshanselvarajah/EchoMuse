@@ -559,8 +559,8 @@
    ]
   ],
   "stats": {
-   "guardReductionDb": 16.23093389166361,
-   "limiterReductionDb": 0.0,
+   "guardReductionDb": 8.35496377122866,
+   "limiterReductionDb": 3.550539038757842,
    "clipped": 0,
    "clippedBypassed": 0
   },
@@ -618,8 +618,8 @@
    ]
   ],
   "stats": {
-   "guardReductionDb": 30.000000000000004,
-   "limiterReductionDb": 4.355241968508977,
+   "guardReductionDb": 23.302582677108816,
+   "limiterReductionDb": 5.535375701255354,
    "clipped": 0,
    "clippedBypassed": 0
   },
@@ -725,8 +725,8 @@
    ]
   ],
   "stats": {
-   "guardReductionDb": 25.478938835631396,
-   "limiterReductionDb": 0.0,
+   "guardReductionDb": 13.359057094195583,
+   "limiterReductionDb": 3.9005395443423225,
    "clipped": 0,
    "clippedBypassed": 0
   },

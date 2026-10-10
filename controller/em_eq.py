@@ -395,8 +395,15 @@ def apply(
     # THEN the limiter catches what is left. Limiting first would spend gain
     # reduction on bass that is about to be thrown away, pulling down the
     # midrange for no reason.
+    # A guard that delays (Radar's stock MBCL, its look-ahead) is fed its
+    # latency in silence and the same count dropped from the front, so a
+    # one-shot buffer comes back aligned and whole.
+    lat = getattr(guard, "latency", 0) if guard is not None else 0
     if guard is not None:
-        samples = guard.process(samples)
+        if lat:
+            samples = guard.process(np.concatenate((samples, np.zeros(lat))))[lat:]
+        else:
+            samples = guard.process(samples)
     if limiter is not None:
         samples = np.concatenate([limiter.process(samples), limiter.flush()])
     # Backstop only. With a limiter attached this must never engage; without
@@ -619,9 +626,15 @@ class StreamingEQ:
         unconditionally. Without it the last few ms of every music stream are
         dropped — inaudible on a track, obvious on a short announcement.
         """
+        lat = getattr(self._guard, "latency", 0) if self._guard is not None else 0
+        guard_tail = self._guard.process(np.zeros(lat)) if lat else None
         if self._limiter is None:
-            return b""
-        tail = self._limiter.flush()
+            if guard_tail is None:
+                return b""
+            tail = guard_tail
+        else:
+            tail = self._limiter.flush() if guard_tail is None else np.concatenate(
+                (self._limiter.process(guard_tail), self._limiter.flush()))
         if not tail.size:
             return b""
         if self._fir is not None:

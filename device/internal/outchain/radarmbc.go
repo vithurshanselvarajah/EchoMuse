@@ -52,13 +52,11 @@ var radarBands = [4]radarBandSpec{
 // reason to pay an Exp call per sample per band for them.
 var (
 	radarSysGain       = dbToGain(radarMbclInVolDb)
-	radarCompInVolGain [4]float64
 	radarLimInVolGain  [4]float64
 )
 
 func init() {
 	for i, b := range radarBands {
-		radarCompInVolGain[i] = dbToGain(b.compInVolDb)
 		radarLimInVolGain[i] = dbToGain(b.limInVolDb)
 	}
 }
@@ -137,7 +135,7 @@ type radarMultiband struct {
 	lp3c1, hp3c1 [2]biquad // fc3 compensation, on low2 -> band2
 	lp3c2, hp3c2 [2]biquad // fc3 compensation, on ap2(low1) -> band1
 
-	comp [4]*bandGain
+	comp [4]*stockComp
 	lim  [4]*bandGain
 }
 
@@ -155,7 +153,7 @@ func newRadarMultiband(fs float64) *radarMultiband {
 		lp3c2: [2]biquad{lo3, lo3}, hp3c2: [2]biquad{hi3, hi3},
 	}
 	for i, b := range radarBands {
-		m.comp[i] = newBandGain(b.compRatio, b.compThresholdDb, b.limReleaseMs, b.compFloorDb, fs)
+		m.comp[i] = newStockComp(fs, b.compRatio, b.compThresholdDb, b.compFloorDb, b.compInVolDb)
 		m.lim[i] = newBandLimiter(b.limThresholdDb, b.limReleaseMs, fs)
 	}
 	return m
@@ -187,10 +185,7 @@ func (m *radarMultiband) step(x float64) float64 {
 	// bassGuard's own bypass.
 	var out float64
 	for i := 0; i < 4; i++ {
-		y := raw[i] * radarSysGain * radarCompInVolGain[i]
-		if m.enabled {
-			y *= m.comp[i].levelGain(y)
-		}
+		y := m.comp[i].step(raw[i] * radarSysGain) // comp_inVol inside
 		y *= radarLimInVolGain[i]
 		if m.enabled {
 			y *= m.lim[i].levelGain(y)
@@ -233,24 +228,28 @@ func (m *radarMultiband) reset() {
 
 // setEnabled/setFloorDb/takeMaxReductionDb complete bassStage — see
 // chain.go.
-func (m *radarMultiband) setEnabled(enabled bool) { m.enabled = enabled }
+func (m *radarMultiband) setEnabled(enabled bool) {
+	m.enabled = enabled
+	for _, c := range m.comp {
+		c.enabled = enabled
+	}
+}
 
 // setFloorDb reaches band 1's floor only — the one dashboard control
 // Radar's guard has (bassGuardDb), same meaning as before this class
 // existed. Bands 2-4 have no control, same reasoning as the limiter
 // override: there is nothing today to leave untouched.
-func (m *radarMultiband) setFloorDb(floorDb float64) { m.comp[0].floorDb = floorDb }
+func (m *radarMultiband) setFloorDb(floorDb float64) { m.comp[0].setFloorDb(floorDb) }
 
 func (m *radarMultiband) takeMaxReductionDb() float64 {
 	var worst float64
 	for i := 0; i < 4; i++ {
-		if m.comp[i].maxReductionDb > worst {
-			worst = m.comp[i].maxReductionDb
+		if r := m.comp[i].takeMaxReductionDb(); r > worst {
+			worst = r
 		}
 		if m.lim[i].maxReductionDb > worst {
 			worst = m.lim[i].maxReductionDb
 		}
-		m.comp[i].maxReductionDb = 0
 		m.lim[i].maxReductionDb = 0
 	}
 	return worst

@@ -332,15 +332,14 @@ def test_radar_multiband_band3_and_4_get_their_input_trim():
     comp_inVol is a genuine gain stage ahead of the detector — band 3's
     +3dB must make it engage at a level that would NOT cross its own
     -15dB threshold on its own, once the ALWAYS-ON system gain (+4dB) is
-    also accounted for. amp=0.094 is -20.5dBFS; +4 (system) lands at
-    -16.5, still under -15 without the band's own trim, and +4+3 lands
-    at -13.5, over it — which is the whole reason MBCL.cfg carries this
-    stage.
+    also accounted for. Stock's detector is POWER (StockCompressor), so a
+    sine reads 3dB under its peak: amp=0.133 is -17.5dBFS peak, -20.5dB
+    power; +4 lands at -16.5, under -15, and +4+3 at -13.5, over it.
     """
-    amp = 0.094
-    level_db = 20 * np.log10(amp)
-    assert level_db + M.RADAR_MBCL_IN_VOL_DB < -15.0  # under threshold without the trim
-    assert level_db + M.RADAR_MBCL_IN_VOL_DB + 3.0 > -15.0  # over it with the trim
+    amp = 0.133
+    power_db = 20 * np.log10(amp) - 10 * np.log10(2)
+    assert power_db + M.RADAR_MBCL_IN_VOL_DB < -15.0
+    assert power_db + M.RADAR_MBCL_IN_VOL_DB + 3.0 > -15.0
 
     mb = M.RadarMultiband(FS, enabled=True)
     mb.process(_sine(1000.0, seconds=1.0, amp=amp))
