@@ -272,3 +272,24 @@ func (f *eqFIR) reset() {
 		f.overlap[i] = 0
 	}
 }
+
+// StockVolumeLevel is stock's device level for its 0-100 music volume value
+// (stockMixerLevels): what a server's volume means on Radar, as the
+// controller's em_volume.ha_volume_to_device reads HA's slider.
+func StockVolumeLevel(value int) int {
+	return int(stockMixerLevels[min(max(value, 0), 100)])
+}
+
+// StockVolumeValue is the inverse: the highest value whose level is at or
+// below this one. The table is strictly increasing, so a value round-trips
+// exactly, which a server needs or it and the device correct each other
+// forever.
+func StockVolumeValue(level int) int {
+	value := 0
+	for v, lv := range stockMixerLevels {
+		if int(lv) <= level {
+			value = v
+		}
+	}
+	return value
+}

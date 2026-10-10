@@ -113,3 +113,17 @@ func TestTookVolume(t *testing.T) {
 		t.Error("biscuit chain reports it took the volume")
 	}
 }
+
+// Every stock volume value survives the trip to a device level and back,
+// and the levels are stock's (value + 27 from 11 up, 127 at 100).
+func TestStockVolumeRoundTrips(t *testing.T) {
+	for v := 0; v <= 100; v++ {
+		if got := StockVolumeValue(StockVolumeLevel(v)); got != v {
+			t.Errorf("value %d -> level %d -> value %d", v, StockVolumeLevel(v), got)
+		}
+	}
+	if StockVolumeLevel(30) != 57 || StockVolumeLevel(100) != 127 || StockVolumeLevel(5) != 20 {
+		t.Errorf("levels 30/100/5 = %d/%d/%d, want 57/127/20",
+			StockVolumeLevel(30), StockVolumeLevel(100), StockVolumeLevel(5))
+	}
+}
