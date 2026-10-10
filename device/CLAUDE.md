@@ -1169,6 +1169,17 @@ calls are deliberately **not** floored — HA's volume 0.0 must still mean
 silent — and a press from below the floor lands *on* it, so one press always
 reaches audible.
 
+**On Radar the buttons walk stock's own 30 steps instead**
+(`radarVolumeSteps`, 2026-10-10): each Alexa step's value from
+`VolumeCurves.xml`, through the level table read out of stock's
+`/system/bin/mixer`, which is already in this law (0.5dB per step, 127 =
+0dB). That is 30 presses from −62dB to unity where the 4dB band gave 10,
+and a press moves as far as it does on a stock Echo. A level between steps
+moves to the next one; the bottom step is the floor. The controller reads the
+HA slider on the same table on Radar (`em_volume.STOCK_MIXER_LEVELS`), so HA
+54% is Alexa 5 (−23dB). Biscuit keeps the band above: its stock tables have
+not been read.
+
 `volumeButtonSound` is the optional physical-button preview (#637). It plays
 only when the button actually changes the level and both voice and music have
 been quiet for 100ms; HA/controller volume sets never play it. The cue mixer

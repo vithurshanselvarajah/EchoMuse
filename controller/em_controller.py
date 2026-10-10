@@ -4532,7 +4532,7 @@ async def handle_control(ws: WebSocketServerProtocol, secure: bool = False):
         # value via volume_state on connect, but this seeds a sane default
         # in the window before that first message arrives.
         device.volume = _device_level_to_ha(
-            int(config.get("startupVolume", 85))
+            int(config.get("startupVolume", 85)), device.board_id
         )
         log.info(f"[control] Config pushed to {device_id} (volume={device.volume:.3f})")
 
@@ -4628,6 +4628,7 @@ async def handle_control(ws: WebSocketServerProtocol, secure: bool = False):
             ring_alarm=_ring_alarm,
             stop_alarm=_stop_alarm,
             start_conversation=_start_conversation,
+            board_id=device.board_id,
         )
         # A device boots at its stored startupVolume, which an output mute
         # never overwrites — so a mute from before this connection has to be
@@ -4745,7 +4746,8 @@ async def handle_control(ws: WebSocketServerProtocol, secure: bool = False):
                             # report is the one kept.
                             await device.send_control({"type": "volume_set", "level": _send})
                         if _keep:
-                            device.volume = _device_level_to_ha(raw_level)
+                            device.volume = _device_level_to_ha(raw_level,
+                                                                device.board_id)
                             log.debug(
                                 f"[{device_id}] volume_state: level={raw_level} "
                                 f"→ {device.volume:.3f}"

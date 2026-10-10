@@ -116,3 +116,72 @@ func TestStepReportsWhetherTheLevelChanged(t *testing.T) {
 		t.Fatal("step down at the floor reported a change")
 	}
 }
+
+// radarVolumeSteps is stock's VolumeCurves.xml music row through stock's
+// mixer level table — recomputed here from both, so a typo in either the
+// ladder or the derivation fails. Pinned against controller/em_volume's
+// STOCK_MIXER_LEVELS too (same table, value + 27 from 11 up).
+func TestRadarVolumeStepsAreStocks(t *testing.T) {
+	curve := []int{0, 1, 2, 3, 4, 6, 11, 16, 22, 28, 34, 40, 44, 46, 50, 54,
+		56, 60, 64, 68, 70, 72, 76, 80, 84, 88, 90, 92, 96, 98, 100}
+	low := []int{0, 3, 7, 11, 17, 20, 27, 30, 32, 35, 36}
+	mixer := func(v int) int {
+		if v <= 10 {
+			return low[v]
+		}
+		return v + 27
+	}
+	if len(radarVolumeSteps) != 30 {
+		t.Fatalf("%d steps, want 30 (stock's volume_step-01..30)", len(radarVolumeSteps))
+	}
+	for s := 1; s <= 30; s++ {
+		if got, want := radarVolumeSteps[s-1], mixer(curve[s]); got != want {
+			t.Errorf("step %d: level %d, want %d", s, got, want)
+		}
+	}
+}
+
+// On Radar the buttons walk stock's ladder: 29 presses from the bottom step
+// reach unity, a level between steps lands on the next one, and neither end
+// steps past itself.
+func TestRadarButtonsWalkStocksSteps(t *testing.T) {
+	vc := &volumeController{ledCtrl: func() led.Controller { return nil }, steps: radarVolumeSteps}
+	vc.Set(0, false)
+	vc.StepUp()
+	if vc.Get() != 3 {
+		t.Fatalf("first press from silence: %d, want 3", vc.Get())
+	}
+	for i := 0; i < 29; i++ {
+		vc.StepUp()
+	}
+	if vc.Get() != 127 {
+		t.Fatalf("after 30 presses: %d, want 127", vc.Get())
+	}
+	vc.StepUp()
+	if vc.Get() != 127 {
+		t.Fatalf("past the top: %d", vc.Get())
+	}
+	vc.Set(80, false) // between 77 and 81
+	vc.StepUp()
+	if vc.Get() != 81 {
+		t.Errorf("up from 80: %d, want 81", vc.Get())
+	}
+	vc.Set(80, false)
+	vc.StepDown()
+	if vc.Get() != 77 {
+		t.Errorf("down from 80: %d, want 77", vc.Get())
+	}
+	vc.Set(3, false)
+	vc.StepDown()
+	if vc.Get() != 3 {
+		t.Errorf("down from the bottom step: %d, want 3", vc.Get())
+	}
+}
+
+func TestStepIndex(t *testing.T) {
+	for _, tc := range []struct{ level, idx int }{{0, 0}, {2, 0}, {3, 1}, {80, 14}, {81, 15}, {127, 30}} {
+		if got := stepIndex(radarVolumeSteps, tc.level); got != tc.idx {
+			t.Errorf("level %d: index %d, want %d", tc.level, got, tc.idx)
+		}
+	}
+}

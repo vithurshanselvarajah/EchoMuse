@@ -34,6 +34,7 @@ import numpy as np
 from scipy.signal import sosfilt
 
 import em_limiter
+import em_volume
 import em_mbc  # noqa: F401  (type reference in signatures)
 
 log = logging.getLogger("echomuse.eq")
@@ -186,11 +187,7 @@ _RADAR_EQ_BANDED_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                      "radar_eq_banded.json")
 _radar_eq_banded_cache: tuple[list, list] | None = None
 
-STOCK_MIXER_LEVELS = (
-    0, 3, 7, 11, 17, 20, 27, 30, 32, 35, 36,
-    *range(38, 128),            # values 11..100: value + 27
-)
-assert len(STOCK_MIXER_LEVELS) == 101
+STOCK_MIXER_LEVELS = em_volume.STOCK_MIXER_LEVELS
 
 
 def stock_volume_value(gain: float) -> int:
