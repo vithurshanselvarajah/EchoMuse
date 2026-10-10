@@ -96,6 +96,18 @@ type bassStage interface {
 	takeMaxReductionDb() float64
 }
 
+// peakLimiter is the full-band limiter at the end of the chain — limiter on
+// every board but Radar, stockLimiter (MBCL's own full-band limiter) on it.
+type peakLimiter interface {
+	step(x float64) float64
+	reset()
+	setEnabled(on bool)
+	setParams(thresholdDb, releaseMs, fs float64)
+	// takeStats returns the worst reduction since the last call (and clears
+	// it) and the running clip counts.
+	takeStats() (maxReductionDb float64, clipped, clippedBypassed uint64)
+}
+
 // Chain runs EQ → bass guard → limiter on stereo S16_LE periods.
 //
 // Order is em_eq's: the guard removes excursion the driver cannot deliver,
@@ -123,7 +135,7 @@ type Chain struct {
 	params  Params
 	eq      eq
 	guard   bassStage
-	lim     *limiter
+	lim     peakLimiter
 	idle    bool // state is all zero and input is silence
 	running bool // active on the previous period
 
@@ -180,12 +192,16 @@ func NewForBoard(sampleRate int, boardID string) *Chain {
 	} else {
 		guard = newBassGuard(fs, boardID)
 	}
+	var lim peakLimiter = newLimiter(fs)
+	if boardID == "radar" {
+		lim = newStockLimiter(fs, radarLimiterThresholdDb, radarLimiterReleaseMs, 0)
+	}
 	c := &Chain{
 		fs:          fs,
 		boardID:     boardID,
 		eq:          eq{fs: fs},
 		guard:       guard,
-		lim:         newLimiter(fs),
+		lim:         lim,
 		idle:        true,
 		takesVolume: boardID == "radar",
 		preCur:      1,
@@ -242,7 +258,7 @@ func (c *Chain) apply(p Params) {
 	c.eq.set(p.Bands, p.Loudness)
 	c.guard.setEnabled(p.GuardEnabled)
 	c.guard.setFloorDb(math.Min(p.GuardDb, 0))
-	c.lim.enabled = p.LimiterEnabled
+	c.lim.setEnabled(p.LimiterEnabled)
 	limThresholdDb, limReleaseMs := p.LimiterThresholdDb, p.LimiterReleaseMs
 	if c.boardID == "radar" {
 		limThresholdDb, limReleaseMs = radarLimiterThresholdDb, radarLimiterReleaseMs
@@ -446,12 +462,12 @@ type Stats struct {
 // TakeStats returns and clears the maximum reductions since the last call.
 // ALSA goroutine only.
 func (c *Chain) TakeStats() Stats {
+	limRed, clipped, clippedBypassed := c.lim.takeStats()
 	s := Stats{
 		GuardReductionDb:   c.guard.takeMaxReductionDb(),
-		LimiterReductionDb: c.lim.maxReductionDb,
-		Clipped:            c.lim.clipped,
-		ClippedBypassed:    c.lim.clippedBypassed,
+		LimiterReductionDb: limRed,
+		Clipped:            clipped,
+		ClippedBypassed:    clippedBypassed,
 	}
-	c.lim.maxReductionDb = 0
 	return s
 }

@@ -100,13 +100,14 @@ func TestRadarChainOverridesLimiterRegardlessOfParams(t *testing.T) {
 	c.SetParams(p)
 	c.Process(loud(2048)) // takePending -> apply runs here
 
-	if c.lim.thresholdDb != radarLimiterThresholdDb {
+	lim := c.lim.(*stockLimiter)
+	if lim.thresholdDb != radarLimiterThresholdDb {
 		t.Errorf("lim.thresholdDb = %g, want %g (Params asked for %g)",
-			c.lim.thresholdDb, radarLimiterThresholdDb, p.LimiterThresholdDb)
+			lim.thresholdDb, radarLimiterThresholdDb, p.LimiterThresholdDb)
 	}
-	if c.lim.releaseMs != radarLimiterReleaseMs {
+	if lim.releaseMs != radarLimiterReleaseMs {
 		t.Errorf("lim.releaseMs = %g, want %g (Params asked for %g)",
-			c.lim.releaseMs, radarLimiterReleaseMs, p.LimiterReleaseMs)
+			lim.releaseMs, radarLimiterReleaseMs, p.LimiterReleaseMs)
 	}
 }
 
@@ -121,10 +122,11 @@ func TestBiscuitChainUsesParamsLimiterUnmodified(t *testing.T) {
 	c.SetParams(p)
 	c.Process(loud(2048))
 
-	if c.lim.thresholdDb != -1.0 {
-		t.Errorf("lim.thresholdDb = %g, want -1.0 (biscuit must not be overridden)", c.lim.thresholdDb)
+	lim := c.lim.(*limiter)
+	if lim.thresholdDb != -1.0 {
+		t.Errorf("lim.thresholdDb = %g, want -1.0 (biscuit must not be overridden)", lim.thresholdDb)
 	}
-	if c.lim.releaseMs != 150.0 {
-		t.Errorf("lim.releaseMs = %g, want 150.0 (biscuit must not be overridden)", c.lim.releaseMs)
+	if lim.releaseMs != 150.0 {
+		t.Errorf("lim.releaseMs = %g, want 150.0 (biscuit must not be overridden)", lim.releaseMs)
 	}
 }

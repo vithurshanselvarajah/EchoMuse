@@ -1,7 +1,5 @@
 package outchain
 
-import "math"
-
 // Radar's full 4-band MBCL ("Radar Tuning V4.5"), read verbatim off a Radar
 // unit's own /system/vendor/etc/audio-algorithms/MBCL.cfg. This is the
 // bit-exact Go mirror of controller/em_mbc.py's RadarMultiband — see that
@@ -48,66 +46,8 @@ var radarBands = [4]radarBandSpec{
 		limThresholdDb: -3.0, limReleaseMs: 20.0, limInVolDb: 0.0},
 }
 
-// Precomputed once: the fixed trims never change mid-stream, so there is no
-// reason to pay an Exp call per sample per band for them.
-var (
-	radarSysGain       = dbToGain(radarMbclInVolDb)
-	radarLimInVolGain  [4]float64
-)
-
-func init() {
-	for i, b := range radarBands {
-		radarLimInVolGain[i] = dbToGain(b.limInVolDb)
-	}
-}
-
-// bandGain is one dynamics stage's detector and gain computer — em_mbc.py's
-// _BandGain as a per-sample recursion. A compressor with ratio and floorDb;
-// an infinite ratio and a -infinite floor (newBandLimiter) make it a pure
-// peak limiter instead, reusing the exact same law the compressor uses —
-// 1/+Inf is well-defined as 0 in IEEE754, so no branch is needed to tell
-// the two apart.
-type bandGain struct {
-	ratio, thresholdDb, thresholdLin, floorDb float64
-	slew           float64
-	gainDb         float64
-	gain           gainCache
-	maxReductionDb float64
-}
-
-func newBandGain(ratio, thresholdDb, releaseMs, floorDb, fs float64) *bandGain {
-	return &bandGain{
-		ratio:        math.Max(1.0, ratio),
-		thresholdDb:  thresholdDb,
-		thresholdLin: fullScale * math.Pow(10, thresholdDb/20),
-		floorDb:      math.Min(0.0, floorDb),
-		slew:         releaseReferenceDb / (math.Max(0.1, releaseMs) / 1000) / fs,
-	}
-}
-
-func newBandLimiter(thresholdDb, releaseMs, fs float64) *bandGain {
-	return newBandGain(math.Inf(1), thresholdDb, releaseMs, math.Inf(-1), fs)
-}
-
-// levelGain returns the linear gain for this sample given x as the
-// detector input, and advances the carried envelope — same optimisation as
-// bassGuard.step: the log is skipped entirely below the threshold, compared
-// in LINEAR units so the skip can never disagree with the dB comparison it
-// stands in for.
-func (b *bandGain) levelGain(x float64) float64 {
-	target := 0.0
-	if a := math.Abs(x); a > b.thresholdLin {
-		levelDb := 20 * math.Log10(a/fullScale)
-		target = max(-(levelDb-b.thresholdDb)*(1-1/b.ratio), b.floorDb)
-	}
-	b.gainDb = min(target, b.gainDb+b.slew)
-	if r := -b.gainDb; r > b.maxReductionDb {
-		b.maxReductionDb = r
-	}
-	return b.gain.of(b.gainDb)
-}
-
-func (b *bandGain) reset() { b.gainDb = 0 }
+// The system gain, precomputed: there is no reason to pay an Exp per sample.
+var radarSysGain = dbToGain(radarMbclInVolDb)
 
 // radarMultiband is Radar's full MBCL — three crossovers splitting the
 // signal into four bands, each running its own compressor then its own
@@ -136,7 +76,7 @@ type radarMultiband struct {
 	lp3c2, hp3c2 [2]biquad // fc3 compensation, on ap2(low1) -> band1
 
 	comp [4]*stockComp
-	lim  [4]*bandGain
+	lim  [4]*stockLimiter
 }
 
 func newRadarMultiband(fs float64) *radarMultiband {
@@ -154,7 +94,7 @@ func newRadarMultiband(fs float64) *radarMultiband {
 	}
 	for i, b := range radarBands {
 		m.comp[i] = newStockComp(fs, b.compRatio, b.compThresholdDb, b.compFloorDb, b.compInVolDb)
-		m.lim[i] = newBandLimiter(b.limThresholdDb, b.limReleaseMs, fs)
+		m.lim[i] = newStockLimiter(fs, b.limThresholdDb, b.limReleaseMs, b.limInVolDb)
 	}
 	return m
 }
@@ -186,10 +126,7 @@ func (m *radarMultiband) step(x float64) float64 {
 	var out float64
 	for i := 0; i < 4; i++ {
 		y := m.comp[i].step(raw[i] * radarSysGain) // comp_inVol inside
-		y *= radarLimInVolGain[i]
-		if m.enabled {
-			y *= m.lim[i].levelGain(y)
-		}
+		y = m.lim[i].step(y)                       // lim_inVol inside
 		out += y
 	}
 	return out
@@ -230,8 +167,9 @@ func (m *radarMultiband) reset() {
 // chain.go.
 func (m *radarMultiband) setEnabled(enabled bool) {
 	m.enabled = enabled
-	for _, c := range m.comp {
-		c.enabled = enabled
+	for i := range m.comp {
+		m.comp[i].enabled = enabled
+		m.lim[i].setEnabled(enabled)
 	}
 }
 
@@ -247,10 +185,9 @@ func (m *radarMultiband) takeMaxReductionDb() float64 {
 		if r := m.comp[i].takeMaxReductionDb(); r > worst {
 			worst = r
 		}
-		if m.lim[i].maxReductionDb > worst {
-			worst = m.lim[i].maxReductionDb
+		if r, _, _ := m.lim[i].takeStats(); r > worst {
+			worst = r
 		}
-		m.lim[i].maxReductionDb = 0
 	}
 	return worst
 }

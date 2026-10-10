@@ -329,15 +329,10 @@ def build_guard(sample_rate: int,
 #     band 4 3250Hz-Nyq    comp  2:1 -10dB floor -40dB  lim  -3dB/20ms  (+3dB in)
 #     full-band limiter (already ported, see em_limiter.RADAR_*)  -3dB/20ms
 #
-# ONE NUMBER IS INFERRED, NOT READ: the config names a release time for each
-# band's LIMITER (lim_release) but none at all for its COMPRESSOR — there is
-# no comp_release field anywhere in the file. Rather than inventing an
-# unrelated number, each band's compressor reuses ITS OWN limiter's release
-# (200/80/20/20ms) — the two stages in a band most plausibly share a time
-# constant, and for band 1 this reuses BASS_RELEASE_MS=200 exactly, so
-# nothing about band 1's existing behaviour changes. Flagged here the same
-# way DEFAULT_BASS_GUARD_DB's choice is: a reasoned default, not a
-# measurement, in case a future read of the binary settles it properly.
+# The DYNAMICS are read out of libasp.so rather than this file, which names
+# no compressor timing at all: StockCompressor and em_limiter.StockLimiter
+# (2026-10-10). The limiter clamps its release to 180..400ms, so the 80 and
+# 20ms releases above (and the full-band one's 20ms) all run at 180ms.
 RADAR_MBCL_CROSSOVERS_HZ = (70.0, 200.0, 3250.0)
 
 # The system gain MBCL applies to the WHOLE signal before splitting into
@@ -374,16 +369,6 @@ RADAR_MBCL_BANDS: tuple[_MbclBand, ...] = (
               lim_threshold_db=-3.0, lim_release_ms=20.0, lim_in_vol_db=0.0),
 )
 
-# A true peak limiter is this module's compressor with an infinite ratio
-# (so the gain exactly cancels whatever is over threshold, pinning the
-# output AT it) and no floor (a limiter may reduce without bound) — see
-# _band_limiter. Reusing _BandGain rather than writing a second gain law
-# means the limiter stage is held to the same tests as the compressor one.
-_INFINITE_RATIO = math.inf
-
-
-def _band_limiter(threshold_db: float, release_ms: float, fs: int) -> "_BandGain":
-    return _BandGain(_INFINITE_RATIO, threshold_db, release_ms, -math.inf, fs)
 
 
 def _f32(hexbits: str) -> float:
@@ -620,8 +605,13 @@ class RadarMultiband:
         # Samples the bands are delayed by (stock's look-ahead plus one
         # block of streaming), so a one-shot or a flush can drain it.
         self.latency = self._comp[0].latency
-        self._lim = [_band_limiter(b.lim_threshold_db, b.lim_release_ms, fs)
-                    for b in RADAR_MBCL_BANDS]
+        # Stock's own limiter (em_limiter.StockLimiter), lim_inVol inside.
+        self._lim = [em_limiter.StockLimiter(fs, threshold_db=b.lim_threshold_db,
+                                             release_ms=b.lim_release_ms,
+                                             in_vol_db=b.lim_in_vol_db,
+                                             enabled=self.enabled)
+                     for b in RADAR_MBCL_BANDS]
+        self.latency += self._lim[0].latency
 
     @property
     def max_reduction_db(self) -> float:
@@ -649,6 +639,8 @@ class RadarMultiband:
             self.enabled = bool(enabled)
             for c in self._comp:
                 c.enabled = self.enabled
+            for lim in self._lim:
+                lim.set_params(enabled=self.enabled)
 
     def _filt(self, sos: np.ndarray, key: str, x: np.ndarray) -> np.ndarray:
         y, self._z[key] = sosfilt(sos, x, zi=self._z[key])
@@ -700,9 +692,6 @@ class RadarMultiband:
         for i, (raw, spec) in enumerate(zip(
                 (band1_raw, band2_raw, band3_raw, band4_raw), RADAR_MBCL_BANDS)):
             y = self._comp[i].process(raw * sys_gain)   # comp_inVol inside
-            if spec.lim_in_vol_db:
-                y = y * (10.0 ** (spec.lim_in_vol_db / 20.0))
-            if self.enabled:
-                y = y * (10.0 ** (self._lim[i].gains_db(y) / 20.0))
+            y = self._lim[i].process(y)                 # lim_inVol inside
             out = out + y
         return out

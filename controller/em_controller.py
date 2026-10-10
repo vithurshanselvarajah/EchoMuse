@@ -1566,14 +1566,12 @@ def _limiter_for(device):
     path (voice turns and announcements) had never picked that up, so a
     Radar device got the generic -1dB/150ms here while its music got the
     real -3dB/20ms."""
-    threshold_db, release_ms = device.limiter_threshold, device.limiter_release
-    if device.board_id == "radar":
-        threshold_db, release_ms = em_limiter.RADAR_THRESHOLD_DB, em_limiter.RADAR_RELEASE_MS
-    return em_limiter.for_stream(
-        SPEAKER_RATE,
-        device.limiter_enabled,
-        threshold_db,
-        release_ms,
+    if not device.limiter_enabled:
+        return None
+    return em_limiter.build_limiter(
+        SPEAKER_RATE, device.board_id,
+        threshold_db=device.limiter_threshold,
+        release_ms=device.limiter_release,
     )
 
 

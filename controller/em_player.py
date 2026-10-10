@@ -718,8 +718,8 @@ class MediaSession:
             lim_threshold_db, lim_release_ms = _limiter_params()
             eq = em_eq.StreamingEQ(SPEAKER_RATE, device.eq_bands, device.eq_loudness,
                                    stock_curve=(device.eq_stock_curve and is_radar),
-                                   limiter=em_limiter.Limiter(
-                                       SPEAKER_RATE,
+                                   limiter=em_limiter.build_limiter(
+                                       SPEAKER_RATE, device.board_id,
                                        threshold_db=lim_threshold_db,
                                        release_ms=lim_release_ms,
                                        enabled=device.limiter_enabled),

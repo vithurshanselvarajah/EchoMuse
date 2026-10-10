@@ -170,9 +170,9 @@ def render(case):
         return p["limiterThreshold"], p["limiterRelease"]
 
     lim_threshold_db, lim_release_ms = lim_params(p0)
-    lim = em_limiter.Limiter(FS, threshold_db=lim_threshold_db,
-                             release_ms=lim_release_ms,
-                             enabled=p0["limiterEnabled"])
+    lim = em_limiter.build_limiter(FS, board, threshold_db=lim_threshold_db,
+                                   release_ms=lim_release_ms,
+                                   enabled=p0["limiterEnabled"])
     guard = em_mbc.build_guard(FS, board, bass_guard_db=p0["guardDb"],
                                enabled=p0["guardEnabled"])
     # Radar's chain takes the volume; the device starts it at unity, which

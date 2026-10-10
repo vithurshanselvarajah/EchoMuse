@@ -30,26 +30,29 @@ func TestRadarBandsMatchItsOwnMeasuredConfiguration(t *testing.T) {
 	}
 }
 
-// A pure limiter is bandGain with an infinite ratio and a -infinite floor.
-// Pins that the reuse actually degenerates correctly rather than producing
-// NaN or a panic from a divide involving infinities.
-func TestBandLimiterDegeneratesCorrectly(t *testing.T) {
-	l := newBandLimiter(-6.0, 20.0, 48000)
-	if l.ratio != math.Inf(1) {
-		t.Fatalf("ratio = %g, want +Inf", l.ratio)
+// Stock's limiter never lets a sample past its threshold, and its release
+// is clamped to 180..400ms whatever the config asks (libasp 0x8d75c).
+func TestStockLimiterPinsAtThresholdAndClampsRelease(t *testing.T) {
+	l := newStockLimiter(48000, -6.0, 20.0, 0)
+	if l.la != 96 || l.holdN != 20 {
+		t.Fatalf("look-ahead %d hold %d, want 96 and 20", l.la, l.holdN)
 	}
-	if l.floorDb != math.Inf(-1) {
-		t.Fatalf("floorDb = %g, want -Inf", l.floorDb)
+	if l.relN != 8640 {
+		t.Errorf("release %d samples, want 8640 (20ms clamps to 180ms)", l.relN)
 	}
-	// 0dBFS peak against a -6dB threshold: a true limiter pins the output
-	// exactly at the threshold (6dB of reduction), whatever happens after.
-	g := l.levelGain(fullScale - 1) // just under the ceiling, well over -6dB
-	gotDb := 20 * math.Log10(g)
-	if math.Abs(gotDb-(-6.0)) > 0.01 {
-		t.Errorf("gain = %gdB, want -6dB (hard limit at threshold)", gotDb)
+	if n := stockReleaseSamples(1000, 48000); n != 19200 {
+		t.Errorf("1000ms release = %d samples, want 19200 (400ms)", n)
 	}
-	if math.IsNaN(g) || math.IsInf(g, 0) {
-		t.Fatalf("gain = %g, want a finite number", g)
+	var peak float64
+	for i := 0; i < 48000; i++ {
+		y := l.step(32000 * math.Sin(2*math.Pi*200*float64(i)/48000))
+		peak = math.Max(peak, math.Abs(y))
+	}
+	if want := l.thresh; peak > want*(1+1e-12) {
+		t.Errorf("peak out %g over the threshold %g", peak, want)
+	}
+	if r, _, _ := l.takeStats(); r < 5 {
+		t.Errorf("reduction %gdB, want ~6dB on a 0dBFS tone at -6dB", r)
 	}
 }
 
@@ -164,8 +167,8 @@ func TestRadarMultibandResetClearsEveryFilter(t *testing.T) {
 		if m.comp[i].gain != 1 || m.comp[i].level != compInit {
 			t.Errorf("comp[%d] gain=%g level=%g after reset, want stock's 1 and 0.01", i, m.comp[i].gain, m.comp[i].level)
 		}
-		if m.lim[i].gainDb != 0 {
-			t.Errorf("lim[%d].gainDb = %g after reset, want 0", i, m.lim[i].gainDb)
+		if m.lim[i].g != 1 || m.lim[i].hold != 0 || m.lim[i].rel != 0 {
+			t.Errorf("lim[%d] g=%g hold=%d rel=%d after reset, want 1/0/0", i, m.lim[i].g, m.lim[i].hold, m.lim[i].rel)
 		}
 	}
 }

@@ -866,6 +866,22 @@ device) can select; the controller-side chain has no volume and keeps
 `EQ_50`. A switch crossfades across one period — both curves filter the same
 input history, so it is a change of curve and not of signal.
 
+**Radar's MBCL dynamics are stock's own, read out of `libasp.so`**
+(2026-10-10): `em_mbc.StockCompressor` for the four band compressors and
+`em_limiter.StockLimiter` for the four band limiters and the full-band one,
+mirrored in `outchain/stockcomp.go` / `stocklimiter.go`. The compressor
+detects POWER over 1ms blocks behind a noise-floor gate, smooths the level
+(~43ms up, ~435ms down) and the gain again (~654ms), and applies it to audio
+delayed 16ms; the limiter looks ahead 2ms with a retroactive fade, holds 20
+samples and releases linearly over 180–400ms, so MBCL.cfg's 20 and 80ms
+releases run at 180ms. The peak-detecting, instant-attack `_BandGain` they
+replaced pumped the bass on every kick. Stock's start-up state is ported
+too (level 0.01, over band 1's threshold), so a fresh stream eases in. The
+volume reaches `libasp` as `executeAspCommandWithIntInput(5, vol)`, the
+same 0–100 value the EQ file is chosen on, and stock's crossover tables are
+Butterworth LP/HP plus the allpass that LR4 sums to — what `RadarMultiband`
+already did. Stock switches EQ files instantly; we crossfade one period.
+
 ## Ducking: music and voice are separate planes on the device
 
 **A voice turn DUCKS music; it does not pause it** — on firmware announcing
