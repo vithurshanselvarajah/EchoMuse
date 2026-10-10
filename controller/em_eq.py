@@ -139,10 +139,55 @@ RADAR_PEQ_PEAK      = (80.0, 2.0, 0.9)
 RADAR_OUTPUT_TRIM_DB = 3.0                 # flat gain after MBCL's limiter
 
 
+# Stock's own biquad design (libasp.so 0x932e8, cases 4 and 5), 2026-10-10.
+# It is Zoelzer's, on K = tan(pi*fc/fs) and V = 10^(|gain|/20), and NOT the
+# Audio EQ Cookbook: the shelf has a FIXED slope (sqrt(2)K terms) and never
+# reads the cfg's Q, so ParametricEQ.cfg's "Q 0.9" on the shelf is ignored by
+# stock; the peak does use Q. The constant is stock's 1.4142, not sqrt(2).
+# Against the cookbook with Q=0.9 the pair differs by +0.4dB at 50-100Hz and
+# -0.7..-1.3dB at 150-300Hz. Boost and cut are separate forms in stock; both
+# are here, since the cfg's gain is data.
+_STOCK_SQRT2 = 1.4142
+
+
+def _stock_loshelf_sos(fc: float, gain_db: float, fs: float) -> np.ndarray:
+    """Stock's LOW_SHELF (case 5). The cfg's Q is not an input."""
+    K = math.tan(math.pi * fc / fs)
+    K2 = K * K
+    V = 10 ** (abs(gain_db) / 20.0)
+    sv = math.sqrt(V) * _STOCK_SQRT2   # stock's sqrt(2V)
+    if gain_db >= 0:
+        n = 1.0 / (K2 + K * _STOCK_SQRT2 + 1.0)
+        return np.array([[(V * K2 + sv * K + 1.0) * n, 2.0 * (V * K2 - 1.0) * n,
+                          (V * K2 - sv * K + 1.0) * n, 1.0,
+                          2.0 * (K2 - 1.0) * n, (K2 + 1.0 - K * _STOCK_SQRT2) * n]])
+    n = 1.0 / (V * K2 + sv * K + 1.0)
+    return np.array([[(K2 + K * _STOCK_SQRT2 + 1.0) * n, 2.0 * (K2 - 1.0) * n,
+                      (K2 - K * _STOCK_SQRT2 + 1.0) * n, 1.0,
+                      2.0 * (V * K2 - 1.0) * n, (V * K2 - sv * K + 1.0) * n]])
+
+
+def _stock_peak_sos(fc: float, gain_db: float, Q: float, fs: float) -> np.ndarray:
+    """Stock's PEAK (case 4)."""
+    K = math.tan(math.pi * fc / fs)
+    K2 = K * K
+    V = 10 ** (abs(gain_db) / 20.0)
+    if gain_db >= 0:
+        n = 1.0 / (K2 + K / Q + 1.0)
+        return np.array([[(K2 + V * K / Q + 1.0) * n, 2.0 * (K2 - 1.0) * n,
+                          (K2 - V * K / Q + 1.0) * n, 1.0,
+                          2.0 * (K2 - 1.0) * n, (K2 + 1.0 - K / Q) * n]])
+    n = 1.0 / (K2 + V * K / Q + 1.0)
+    return np.array([[(K2 + K / Q + 1.0) * n, 2.0 * (K2 - 1.0) * n,
+                      (K2 - K / Q + 1.0) * n, 1.0,
+                      2.0 * (K2 - 1.0) * n, (K2 + 1.0 - V * K / Q) * n]])
+
+
 def radar_peq_sos(fs: float) -> np.ndarray:
-    return np.vstack([_loshelf_q_sos(*RADAR_PEQ_LOW_SHELF, fs),
-                      _peak_sos(RADAR_PEQ_PEAK[0], RADAR_PEQ_PEAK[1],
-                                RADAR_PEQ_PEAK[2], fs)])
+    return np.vstack([_stock_loshelf_sos(RADAR_PEQ_LOW_SHELF[0],
+                                         RADAR_PEQ_LOW_SHELF[1], fs),
+                      _stock_peak_sos(RADAR_PEQ_PEAK[0], RADAR_PEQ_PEAK[1],
+                                      RADAR_PEQ_PEAK[2], fs)])
 
 
 _RADAR_EQ_TAPS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),

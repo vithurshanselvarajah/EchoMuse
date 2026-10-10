@@ -49,7 +49,7 @@ volume ─► EQ FIR (by volume) ─► ParametricEQ ─► MBCL ─► OutputTr
 | DAC | Never written, stays at 0dB (127) | Held at 127 | `audio_device.xml` |
 | Codec speaker filter | 117-byte biquad set from `audio_device.xml` | Read from the Echo's own file at start-up | `audio_device.xml` |
 | EQ FIR | `EQ_50/60/70/80/100.cfg`, first boundary ≥ volume value | Same files, same rule | `AFE.cfg`, `libasp.so` |
-| ParametricEQ | Low shelf 150Hz +5dB, peak 80Hz +2dB, Q 0.9 | Same | `ParametricEQ.cfg` |
+| ParametricEQ | Low shelf 150Hz +5dB, peak 80Hz +2dB, Q 0.9 | Same values through stock's own filter design (the shelf ignores Q) | `ParametricEQ.cfg`, `libasp.so` 0x932e8 |
 | MBCL input gain | +4dB | +4dB | `MBCL.cfg` |
 | Crossovers | 70 / 200 / 3250Hz, Butterworth LP/HP + allpass | Linkwitz-Riley with allpass compensation (the same filters) | `MBCL.cfg`, `libasp.so` |
 | Band compressors | See below | Ported | `libasp.so` |

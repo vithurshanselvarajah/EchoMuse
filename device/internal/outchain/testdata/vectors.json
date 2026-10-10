@@ -618,8 +618,8 @@
    ]
   ],
   "stats": {
-   "guardReductionDb": 23.302582677108816,
-   "limiterReductionDb": 5.440562155951168,
+   "guardReductionDb": 23.250373865883596,
+   "limiterReductionDb": 5.44275742964246,
    "clipped": 0,
    "clippedBypassed": 0
   },
@@ -725,8 +725,8 @@
    ]
   ],
   "stats": {
-   "guardReductionDb": 13.359057094195581,
-   "limiterReductionDb": 3.2680538603463622,
+   "guardReductionDb": 13.004695712695842,
+   "limiterReductionDb": 3.310124685229805,
    "clipped": 0,
    "clippedBypassed": 0
   },

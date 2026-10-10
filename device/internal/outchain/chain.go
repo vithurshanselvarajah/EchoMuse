@@ -11,10 +11,11 @@ import (
 // Radar's ParametricEQ.cfg ("EQv5.4") and OutputTrim, from its own vendor
 // files. AFE.cfg's Playback.Algorithms runs EQ (FIR) -> ParametricEQ -> MBCL
 // -> OutputTrim, so both ride StockCurve with the FIR, in that order. Only
-// the cfg's first two biquads are not BYPASS; both state Q=0.9. Mirrors
+// the cfg's first two biquads are not BYPASS; both state Q=0.9, which
+// stock's design uses for the peak only (see stockLowShelf). Mirrors
 // controller/em_eq.py's RADAR_PEQ_* / RADAR_OUTPUT_TRIM_DB.
 const (
-	radarPEQShelfFc, radarPEQShelfDb, radarPEQShelfQ = 150.0, 5.0, 0.9
+	radarPEQShelfFc, radarPEQShelfDb = 150.0, 5.0 // stock ignores the shelf Q
 	radarPEQPeakFc, radarPEQPeakDb, radarPEQPeakQ    = 80.0, 2.0, 0.9
 	radarOutputTrimDb                                = 3.0
 )
@@ -211,8 +212,8 @@ func NewForBoard(sampleRate int, boardID string) *Chain {
 		c.firBands, c.firBounds = loadRadarEQBands()
 		if c.firBands != nil {
 			c.peq = []biquad{
-				lowShelfQ(radarPEQShelfFc, radarPEQShelfDb, radarPEQShelfQ, fs),
-				peaking(radarPEQPeakFc, radarPEQPeakDb, radarPEQPeakQ, fs),
+				stockLowShelf(radarPEQShelfFc, radarPEQShelfDb, fs),
+				stockPeak(radarPEQPeakFc, radarPEQPeakDb, radarPEQPeakQ, fs),
 			}
 			c.trimGain = dbToGain(radarOutputTrimDb)
 		}

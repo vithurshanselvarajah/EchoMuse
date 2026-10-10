@@ -86,19 +86,33 @@ def test_streaming_eq_flat_is_passthrough():
 # ─── Radar ParametricEQ + OutputTrim (ParametricEQ.cfg / AFE.cfg) ─────────────
 
 def test_radar_parametric_eq_response():
-    """+5dB low shelf at 150Hz (Q .9) and +2dB peak at 80Hz (Q .9): the
-    shelf's own gain at its corner is half (+2.5dB), the peak adds on top of
-    it at 80Hz, and the top of the band is untouched."""
+    """+5dB low shelf at 150Hz and +2dB peak at 80Hz (Q .9), in stock's own
+    design (libasp.so 0x932e8). Its shelf sits 3dB under its boost at the
+    corner (Zoelzer), not half of it as the cookbook's does, so 150Hz reads
+    +3.2dB from the shelf and +4.1dB with the peak's skirt. Values are what
+    the decoded formulas give; the top of the band is untouched."""
     from scipy.signal import sosfreqz
     fs = 48000
     sos = em_eq.radar_peq_sos(fs)
-    f = np.array([20.0, 80.0, 150.0, 5000.0])
+    f = np.array([20.0, 80.0, 150.0, 300.0, 5000.0])
     _, h = sosfreqz(sos, worN=f, fs=fs)
     db = 20 * np.log10(np.abs(h))
-    assert 4.8 < db[0] < 5.6      # the shelf's 5dB, peak skirt negligible
-    assert 6.8 < db[1] < 7.5    # shelf plus the peak's 2dB
-    assert 2.8 < db[2] < 3.8      # near the shelf corner
-    assert abs(db[3]) < 0.1
+    assert 5.1 < db[0] < 5.3      # the shelf's 5dB, peak skirt negligible
+    assert 6.7 < db[1] < 6.85     # shelf plus the peak's 2dB
+    assert 4.0 < db[2] < 4.2      # at the shelf corner
+    assert 0.7 < db[3] < 0.8      # stock's shelf is still lifting here
+    assert abs(db[4]) < 0.1
+
+
+def test_radar_parametric_shelf_ignores_q_as_stock_does():
+    """libasp's LOW_SHELF design never reads Q (case 5 uses a fixed sqrt(2)K
+    term); ParametricEQ.cfg's 'Q 0.9' on the shelf is therefore not an
+    input. The peak does read it."""
+    import inspect
+    assert "Q" not in inspect.signature(em_eq._stock_loshelf_sos).parameters
+    a = em_eq._stock_peak_sos(80.0, 2.0, 0.9, 48000)
+    b = em_eq._stock_peak_sos(80.0, 2.0, 2.0, 48000)
+    assert not np.allclose(a, b)
 
 
 def test_radar_stock_curve_applies_output_trim():
