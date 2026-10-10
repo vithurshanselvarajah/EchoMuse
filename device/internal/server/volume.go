@@ -261,6 +261,29 @@ func clampToButtonBand(level int) int {
 	return level
 }
 
+// stepArc is the volume arc for a stepped ladder, in half-LEDs per LED:
+// 2 full, 1 half-bright, 0 off. 30 steps over 12 LEDs is two and a half
+// steps to an LED, so lighting whole LEDs only moves the ring every second
+// or third press. The LED a step has only partly reached glows at half
+// brightness, so the ring moves on nearly every press: the arc is 2*n
+// half-LEDs, a step rounds up to the next, and the top step fills it. A
+// level below the ladder's bottom (HA can put it there) still shows one
+// half-LED, so a quiet device does not read as off.
+func stepArc(steps []int, level, n int) []int {
+	half := (stepIndex(steps, level)*2*n + len(steps) - 1) / len(steps)
+	if half < 1 {
+		half = 1
+	}
+	if half > 2*n {
+		half = 2 * n
+	}
+	out := make([]int, n)
+	for i := range out {
+		out[i] = min(max(half-2*i, 0), 2)
+	}
+	return out
+}
+
 // showLEDs lights N of 12 LEDs in cyan proportional to volume, then clears after 2s.
 func (vc *volumeController) showLEDs(level int) {
 	lc := vc.ledCtrl()
@@ -274,24 +297,24 @@ func (vc *volumeController) showLEDs(level int) {
 	// reads as "off" when the device is merely quiet.
 	span := volumeMax - volumeButtonFloor
 	lit := (level - volumeButtonFloor) * numLEDs / span
-	if vc.steps != nil {
-		// By step, as stock's per-step animations are: every press that
-		// can light another LED does, rounding up.
-		lit = (stepIndex(vc.steps, level)*numLEDs + len(vc.steps) - 1) / len(vc.steps)
-	}
 	if lit < 1 && level > volumeMin {
 		lit = 1
 	}
 	if lit > numLEDs {
 		lit = numLEDs
 	}
+	// Whole LEDs in units of two: 2 is full cyan, 1 is the half-bright
+	// LED. The ladder's arc is in half-LEDs; the band's stays whole.
+	units := make([]int, numLEDs)
+	for i := 0; i < lit; i++ {
+		units[i] = 2
+	}
+	if vc.steps != nil {
+		units = stepArc(vc.steps, level, numLEDs)
+	}
 	leds := make([]led.Led, numLEDs)
 	for i := 0; i < numLEDs; i++ {
-		if i < lit {
-			leds[i] = led.Led{ID: i, R: 0, G: 200, B: 200} // cyan
-		} else {
-			leds[i] = led.Led{ID: i, R: 0, G: 0, B: 0}
-		}
+		leds[i] = led.Led{ID: i, R: 0, G: uint8(100 * units[i]), B: uint8(100 * units[i])} // cyan, 200 at full
 	}
 	if err := lc.SetLEDs(leds...); err != nil {
 		log.Printf("Volume LED set failed: %v", err)

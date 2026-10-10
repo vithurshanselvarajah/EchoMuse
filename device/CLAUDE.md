@@ -1180,6 +1180,15 @@ HA slider on the same table on Radar (`em_volume.STOCK_MIXER_LEVELS`), so HA
 54% is Alexa 5 (−23dB). Biscuit keeps the band above: its stock tables have
 not been read.
 
+**The Radar volume arc has a half-bright LED** (`stepArc`, 2026-10-11): 30
+steps over 12 LEDs is two and a half steps to an LED, so whole LEDs alone move
+the ring on 12 of 30 presses. The LED a step has only partly reached glows at
+half brightness (cyan G/B 100 against 200), which moves it on 24 (a step rounds
+up to the next half-LED; the top step fills the ring). That is how stock's
+in-between steps look as described by the owner of the unit; the exact
+brightness is a judgement, not a measured value. Biscuit's band keeps whole
+LEDs.
+
 `volumeButtonSound` is the optional physical-button preview (#637). It plays
 only when the button actually changes the level and both voice and music have
 been quiet for 100ms; HA/controller volume sets never play it. The cue mixer

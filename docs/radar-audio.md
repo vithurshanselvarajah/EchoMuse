@@ -122,6 +122,35 @@ Not checked yet: a measurement or a listening comparison against a stock
 Radar playing the same track at the same volume step. That is the test that
 would settle "exactly like stock".
 
+## Measured against a stock Echo (2026-10-10 and 11)
+
+Two Radars side by side, same Spotify track, recorded and compared by
+spectrum (1/3-octave bands from Welch spectra, levels matched to each
+other).
+
+| Recording | Result |
+|---|---|
+| Song, phone mic, 20% on each | Overall level within 0.3 to 1 dB. Bass 40-200Hz within ±2.6dB with no steady lean; the two clips lined up only to 0.74 correlation, so this one is indicative |
+| Pink noise, phone mic, 20% on each | 40-400Hz equally shaped (the gap was a steady +10 to +11dB: Alexa's 20% is much quieter than Music Assistant's 20%). Above 800Hz both sat on the phone's noise floor (about -82dBFS), so nothing there is readable |
+| Pink noise, DJI mic | Level-matched, ours versus stock: 30-60Hz -0.7dB, 60-150Hz **0.0dB**, 150-300Hz +0.6dB, 300-600Hz +0.7dB, 600Hz-2kHz -0.3dB, 2-5kHz -2.5dB, 5-12kHz -0.8dB. Ours was 3.9dB louder overall at the settings used |
+
+**Reading.** Tone matches stock to about 1dB from 30Hz to 2kHz. The 2-5kHz dip
+is a mic-position effect (a small move shifts it by that much), not
+established as a tuning difference. The extra bass heard is not in the
+spectrum; ours playing louder at the same nominal setting explains part of it.
+
+**Not yet measured:** how fast the bass fades after each hit. "Muddy" is a
+timing effect, and steady noise cannot show it. The test is a song with
+separate bass hits, the same fragment on both Echos with the same mic
+settings, and a comparison of the decay after each hit. A clip of ours also
+carries one full-scale click at 0.56s (the mic being touched), which does not
+affect the figures above.
+
+**What explains the Alexa/Music Assistant "20%" gap.** The Alexa app's percent
+and Music Assistant's slider are different scales. Music Assistant's is
+stock's 0-100 volume value (28 is Alexa step 9, 34 step 10, 40 step 11); compare
+by matching levels in the recording, not the percentages.
+
 ## Where it lives
 
 | What | Python (reference) | Go (on the Echo) |

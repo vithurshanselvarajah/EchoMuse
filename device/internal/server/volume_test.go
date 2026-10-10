@@ -185,3 +185,74 @@ func TestStepIndex(t *testing.T) {
 		}
 	}
 }
+
+// The arc on stock's 30-step ladder moves on nearly every press, and the
+// LED a step has only partly reached is at half brightness.
+func TestStepArcHalfBrightnessBetweenLEDs(t *testing.T) {
+	const n = 12
+	arc := func(idx int) []int { return stepArc(radarVolumeSteps, radarVolumeSteps[idx-1], n) }
+	sum := func(a []int) (t int) {
+		for _, v := range a {
+			t += v
+		}
+		return
+	}
+	// Step 1 is a single half-bright LED, step 2 fills it, step 3 starts the next.
+	for idx, want := range map[int][]int{
+		1:  {1},
+		2:  {2},
+		3:  {2, 1},
+		5:  {2, 2},
+		30: {2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2},
+	} {
+		got := arc(idx)
+		for i, w := range want {
+			if got[i] != w {
+				t.Errorf("step %d LED %d = %d, want %d (arc %v)", idx, i, got[i], w, got)
+			}
+		}
+		for i := len(want); i < n; i++ {
+			if got[i] != 0 {
+				t.Errorf("step %d LED %d = %d, want off (arc %v)", idx, i, got[i], got)
+			}
+		}
+	}
+	// Never lights past the front: at most one LED is half-bright, and every
+	// LED before it is full.
+	moves, prev := 0, 0
+	for idx := 1; idx <= len(radarVolumeSteps); idx++ {
+		a := arc(idx)
+		halves, seenOff := 0, false
+		for _, v := range a {
+			if v == 1 {
+				halves++
+			}
+			if seenOff && v != 0 {
+				t.Errorf("step %d: lit LED after an off one: %v", idx, a)
+			}
+			if v < 2 {
+				seenOff = true
+			}
+		}
+		if halves > 1 {
+			t.Errorf("step %d: %d half-bright LEDs: %v", idx, halves, a)
+		}
+		if s := sum(a); s < prev {
+			t.Errorf("step %d: arc shrank %d -> %d", idx, prev, s)
+		} else {
+			if s > prev {
+				moves++
+			}
+			prev = s
+		}
+	}
+	// Whole LEDs alone changed the ring on 12 of 30 presses; with the half
+	// step it changes on 24.
+	if moves != 24 {
+		t.Errorf("ring changes on %d of 30 steps, want 24", moves)
+	}
+	// Below the ladder: one half-bright LED, never dark above silence.
+	if a := stepArc(radarVolumeSteps, 1, n); a[0] != 1 || sum(a) != 1 {
+		t.Errorf("below the bottom step: %v, want one half-bright LED", a)
+	}
+}
