@@ -132,24 +132,31 @@ other).
 |---|---|
 | Song, phone mic, 20% on each | Overall level within 0.3 to 1 dB. Bass 40-200Hz within ±2.6dB with no steady lean; the two clips lined up only to 0.74 correlation, so this one is indicative |
 | Pink noise, phone mic, 20% on each | 40-400Hz equally shaped (the gap was a steady +10 to +11dB: Alexa's 20% is much quieter than Music Assistant's 20%). Above 800Hz both sat on the phone's noise floor (about -82dBFS), so nothing there is readable |
-| Pink noise, DJI mic | Level-matched, ours versus stock: 30-60Hz -0.7dB, 60-150Hz **0.0dB**, 150-300Hz +0.6dB, 300-600Hz +0.7dB, 600Hz-2kHz -0.3dB, 2-5kHz -2.5dB, 5-12kHz -0.8dB. Ours was 3.9dB louder overall at the settings used |
+| **Song, DJI mic**, same fragment, aligned to 0.81 correlation | Level-matched, ours versus stock: 40Hz -2.6dB, 63Hz -0.5, 100Hz 0.0, 160Hz +0.4, 250Hz +0.6, 400Hz +0.6, 630Hz +1.0, 1kHz -1.7, 1.6kHz -0.8, 2.5kHz -4.0, 4kHz +1.1, 6.3kHz -0.9, 10kHz +2.5. Ours was 4.1dB louder overall at the settings used |
 
-**Reading.** Tone matches stock to about 1dB from 30Hz to 2kHz. The 2-5kHz dip
-is a mic-position effect (a small move shifts it by that much), not
-established as a tuning difference. The extra bass heard is not in the
-spectrum; ours playing louder at the same nominal setting explains part of it.
+(An earlier version of this table called the DJI recording pink noise. It was a song.)
 
-**Not yet measured:** how fast the bass fades after each hit. "Muddy" is a
-timing effect, and steady noise cannot show it. The test is a song with
-separate bass hits, the same fragment on both Echos with the same mic
-settings, and a comparison of the decay after each hit. A clip of ours also
-carries one full-scale click at 0.56s (the mic being touched), which does not
-affect the figures above.
+**Bass decay, same two song recordings.** 34 bass hits each (40-160Hz
+envelope, fall time after each peak):
 
-**What explains the Alexa/Music Assistant "20%" gap.** The Alexa app's percent
-and Music Assistant's slider are different scales. Music Assistant's is
-stock's 0-100 volume value (28 is Alexa step 9, 34 step 10, 40 step 11); compare
-by matching levels in the recording, not the percentages.
+| | Ours | Stock |
+|---|---|---|
+| Fall 10dB, median | 28ms | 28ms |
+| Fall 20dB, median | 60ms | 61ms |
+| 150-400Hz level against 40-120Hz | -9.5dB | -9.8dB |
+
+**Reading.** Tone matches stock to about 1dB from 60Hz to 1kHz, within 2.6dB
+below that, and the bass decays at the same rate, so there is no extra ringing
+and no extra upper-bass body. The 2-5kHz dip (-4.0dB at 2.5kHz) looks like
+mic position, not established as a tuning difference. What remains is level:
+ours played 4dB louder at the same nominal setting, which makes it sound
+bassier. Nothing in the audio shows a tuning difference.
+
+**Settings behind the "20%" comparisons.** The Alexa app's percent and Music
+Assistant's slider are different scales. Music Assistant's is stock's 0-100
+volume value (28 is Alexa step 9, 34 step 10, 40 step 11); compare by
+matching levels in the recording, not the percentages. Spotify normalisation
+was on in Music Assistant.
 
 ## Where it lives
 
