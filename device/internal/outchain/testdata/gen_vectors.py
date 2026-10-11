@@ -6,6 +6,9 @@ em_limiter.Limiter). The Go port is held to these sample for sample.
 
     cd controller && python ../device/internal/outchain/testdata/gen_vectors.py
 
+The Radar cases need a Radar's own files: ECHOMUSE_RADAR_TUNING names a copy
+of an Echo 2's /system/vendor/etc/audio-algorithms (see em_radar_tuning).
+
 Processing runs in 2048-sample chunks, the device's period, and every
 parameter change lands on a chunk boundary, as it does on the device. The
 limiter and guard are always INSTANCES with an enabled flag, never None:
@@ -165,9 +168,7 @@ def render(case):
     # call site does — board identity can't change mid-stream, so this is
     # safe to decide once per case rather than per chunk here too.
     def lim_params(p):
-        if is_radar:
-            return em_limiter.RADAR_THRESHOLD_DB, em_limiter.RADAR_RELEASE_MS
-        return p["limiterThreshold"], p["limiterRelease"]
+        return em_limiter.params_for(board, p["limiterThreshold"], p["limiterRelease"])
 
     lim_threshold_db, lim_release_ms = lim_params(p0)
     lim = em_limiter.build_limiter(FS, board, threshold_db=lim_threshold_db,

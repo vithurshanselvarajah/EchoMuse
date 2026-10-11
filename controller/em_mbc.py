@@ -50,12 +50,12 @@ measured 0.4dB at the output. Found by measurement, not by reading it.
 """
 
 import math
-from dataclasses import dataclass
 
 import numpy as np
 from scipy.signal import butter, sosfilt, sosfreqz
 
 import em_limiter
+import em_radar_tuning
 
 # Crossover, Hz. Measured off stock (#229), not chosen. This is biscuit's
 # band 1 (0-115Hz) from /system/vendor/etc/audio-algorithms/MBCL.cfg.
@@ -287,19 +287,21 @@ def build_guard(sample_rate: int,
                 ) -> "BassGuard | RadarMultiband":
     """
     One guard/compressor instance for a stream, picking the class the board
-    actually has. Radar runs its own real 4-band MBCL (RadarMultiband);
-    every other board keeps the single-band BassGuard above. bass_guard_db
+    actually has. Radar runs its own real 4-band MBCL (RadarMultiband) when
+    its tuning is loaded (em_radar_tuning); every other board, and a Radar
+    without it, keeps the single-band BassGuard above. bass_guard_db
     is the one depth control the dashboard exposes either way — on Radar it
     reaches only band 1's floor, same as before; bands 2-4 have no control,
-    same reasoning as the limiter override (see em_limiter.RADAR_*).
+    same reasoning as the limiter override (see em_limiter.build_limiter).
 
     The single call site both em_player.py and em_controller.py's
     _guard_for now share, so a board's class can never drift between a
     voice turn and a music stream.
     """
-    if (board_id or "biscuit") == "radar":
-        return RadarMultiband(sample_rate, bass_guard_db=bass_guard_db,
-                              enabled=enabled)
+    tuning = em_radar_tuning.current() if board_id == "radar" else None
+    if tuning is not None and tuning.mbcl is not None:
+        return RadarMultiband(sample_rate, tuning.mbcl,
+                              bass_guard_db=bass_guard_db, enabled=enabled)
     crossover_hz, threshold_db = _tuning_for(board_id)
     return BassGuard(sample_rate, bass_guard_db=bass_guard_db,
                      crossover_hz=crossover_hz, threshold_db=threshold_db,
@@ -307,68 +309,17 @@ def build_guard(sample_rate: int,
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Radar's full 4-band MBCL — "Radar Tuning V4.5"
+# Radar's full 4-band MBCL
 # ═══════════════════════════════════════════════════════════════════════════
 #
-# Read verbatim off a Radar unit's own
-# /system/vendor/etc/audio-algorithms/MBCL.cfg (the same file RADAR_CROSSOVER_HZ
-# / RADAR_BASS_THRESHOLD_DB above were read from — those two numbers are band
-# 1's comp_thresh/crossover and agree with this table exactly). Biscuit's own
-# bands 2-4 are deliberately NOT ported (see the module docstring); Radar's
-# are not that uniform "one gentle law repeated" case — four different
-# ratios and thresholds, with band 3 (200-3250Hz, most of the midrange)
-# carrying its own +3dB input trim into both its compressor and its limiter,
-# which is very likely a real part of what reads as "depth" against an
-# unmodified Echo:
-#
-#     mbcl_inVol (system gain, whole signal, before any band)   : +4dB
-#     crossovers                                                : 70 / 200 / 3250 Hz
-#     band 1   0-70Hz      comp 20:1 -25dB floor -40dB  lim -12dB/200ms
-#     band 2  70-200Hz     comp 10:1 -18dB floor -40dB  lim -12dB/80ms
-#     band 3 200-3250Hz    comp  3:1 -15dB floor -40dB  lim  -4dB/20ms  (+3dB in)
-#     band 4 3250Hz-Nyq    comp  2:1 -10dB floor -40dB  lim  -3dB/20ms  (+3dB in)
-#     full-band limiter (already ported, see em_limiter.RADAR_*)  -3dB/20ms
+# Configured from the Echo's own MBCL.cfg (em_radar_tuning.Mbcl), which is not
+# in this repository: crossovers, a system gain ahead of the split, and four
+# bands of compressor then limiter, each with its own input trim. Biscuit's
+# own bands 2-4 are deliberately NOT ported (see the module docstring).
 #
 # The DYNAMICS are read out of libasp.so rather than this file, which names
 # no compressor timing at all: StockCompressor and em_limiter.StockLimiter
-# (2026-10-10). The limiter clamps its release to 180..400ms, so the 80 and
-# 20ms releases above (and the full-band one's 20ms) all run at 180ms.
-RADAR_MBCL_CROSSOVERS_HZ = (70.0, 200.0, 3250.0)
-
-# The system gain MBCL applies to the WHOLE signal before splitting into
-# bands — not a per-band trim. Every band's compressor/limiter sees this
-# raised level, which is part of how stock gets its loudness/density;
-# dropping it would leave every band's law engaging less often than stock's
-# own does.
-RADAR_MBCL_IN_VOL_DB = 4.0
-
-
-@dataclass(frozen=True)
-class _MbclBand:
-    comp_ratio: float
-    comp_threshold_db: float
-    comp_floor_db: float
-    comp_in_vol_db: float
-    lim_threshold_db: float
-    lim_release_ms: float
-    lim_in_vol_db: float
-
-
-RADAR_MBCL_BANDS: tuple[_MbclBand, ...] = (
-    _MbclBand(comp_ratio=20.0, comp_threshold_db=-25.0, comp_floor_db=-40.0,
-              comp_in_vol_db=0.0,
-              lim_threshold_db=-12.0, lim_release_ms=200.0, lim_in_vol_db=0.0),
-    _MbclBand(comp_ratio=10.0, comp_threshold_db=-18.0, comp_floor_db=-40.0,
-              comp_in_vol_db=0.0,
-              lim_threshold_db=-12.0, lim_release_ms=80.0, lim_in_vol_db=0.0),
-    _MbclBand(comp_ratio=3.0, comp_threshold_db=-15.0, comp_floor_db=-40.0,
-              comp_in_vol_db=3.0,
-              lim_threshold_db=-4.0, lim_release_ms=20.0, lim_in_vol_db=3.0),
-    _MbclBand(comp_ratio=2.0, comp_threshold_db=-10.0, comp_floor_db=-40.0,
-              comp_in_vol_db=3.0,
-              lim_threshold_db=-3.0, lim_release_ms=20.0, lim_in_vol_db=0.0),
-)
-
+# (2026-10-10). The limiter clamps its release to 180..400ms.
 
 
 def _f32(hexbits: str) -> float:
@@ -492,7 +443,7 @@ class StockCompressor:
         return fifo[:n]
 
 
-def four_band_flatness_db(crossovers_hz: tuple[float, float, float] = RADAR_MBCL_CROSSOVERS_HZ,
+def four_band_flatness_db(crossovers_hz: tuple[float, float, float],
                           fs: int = 48000) -> float:
     """
     Peak-to-peak deviation of the four allpass-compensated bands' sum, in
@@ -537,14 +488,13 @@ def four_band_flatness_db(crossovers_hz: tuple[float, float, float] = RADAR_MBCL
 
 class RadarMultiband:
     """
-    Radar's real 4-band MBCL, in full — see the constants above for the
-    table and for what one number (each band's compressor release) is
-    inferred rather than read.
+    Radar's real 4-band MBCL, in full, configured from the Echo's own
+    MBCL.cfg (spec, an em_radar_tuning.Mbcl).
 
     Three crossovers split the signal into four bands; each band runs its
     own compressor then its own peak limiter, both with their own input
     trim (comp_inVol/lim_inVol); the four are summed. The combined
-    full-band limiter (em_limiter.RADAR_THRESHOLD_DB/RELEASE_MS) is NOT
+    full-band limiter (em_limiter.build_limiter) is NOT
     part of this class — it is MBCL's own "Full-band limiter" entry and
     stays exactly where it already runs, downstream of this, in
     em_player.py/em_eq.py.
@@ -563,14 +513,16 @@ class RadarMultiband:
     """
 
     def __init__(self, sample_rate: int,
+                 spec: "em_radar_tuning.Mbcl",
                  bass_guard_db: float = DEFAULT_BASS_GUARD_DB,
                  enabled: bool = True):
+        self.spec = spec
         self.sample_rate = int(sample_rate)
         self.enabled = bool(enabled)
         self.bass_guard_db = min(0.0, float(bass_guard_db))
         fs = self.sample_rate
 
-        fc1, fc2, fc3 = RADAR_MBCL_CROSSOVERS_HZ
+        fc1, fc2, fc3 = spec.crossovers_hz
         self._lp1 = _lr4(fc1, fs, "low")
         self._hp1 = _lr4(fc1, fs, "high")
         self._lp2 = _lr4(fc2, fs, "low")
@@ -600,7 +552,7 @@ class RadarMultiband:
             StockCompressor(fs, b.comp_ratio, b.comp_threshold_db,
                             b.comp_floor_db if i > 0 else self.bass_guard_db,
                             in_vol_db=b.comp_in_vol_db, enabled=self.enabled)
-            for i, b in enumerate(RADAR_MBCL_BANDS)
+            for i, b in enumerate(spec.bands)
         ]
         # Samples the bands are delayed by (stock's look-ahead plus one
         # block of streaming), so a one-shot or a flush can drain it.
@@ -610,7 +562,7 @@ class RadarMultiband:
                                              release_ms=b.lim_release_ms,
                                              in_vol_db=b.lim_in_vol_db,
                                              enabled=self.enabled)
-                     for b in RADAR_MBCL_BANDS]
+                     for b in spec.bands]
         self.latency += self._lim[0].latency
 
     @property
@@ -687,10 +639,10 @@ class RadarMultiband:
         # toggle. Only gains_db() — the compression/limiting ITSELF — is
         # skipped while disabled, which also freezes its gain state, same
         # as BassGuard/Limiter bypass.
-        sys_gain = 10.0 ** (RADAR_MBCL_IN_VOL_DB / 20.0)
+        sys_gain = 10.0 ** (self.spec.in_vol_db / 20.0)
         out = 0.0
         for i, (raw, spec) in enumerate(zip(
-                (band1_raw, band2_raw, band3_raw, band4_raw), RADAR_MBCL_BANDS)):
+                (band1_raw, band2_raw, band3_raw, band4_raw), self.spec.bands)):
             y = self._comp[i].process(raw * sys_gain)   # comp_inVol inside
             y = self._lim[i].process(y)                 # lim_inVol inside
             out = out + y

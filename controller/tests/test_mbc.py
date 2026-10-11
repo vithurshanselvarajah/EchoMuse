@@ -193,7 +193,7 @@ def test_tuning_for_selects_by_board(board_id, crossover_hz, threshold_db):
     assert M._tuning_for(board_id) == (crossover_hz, threshold_db)
 
 
-def test_for_stream_applies_the_boards_tuning():
+def test_for_stream_applies_the_boards_tuning(radar_tuning):
     """for_stream is the production call site's path (em_player.py/
     em_controller.py) — this pins that board_id actually reaches a real
     instance, not just the lookup table above. Radar's single-band tuning
@@ -207,7 +207,7 @@ def test_for_stream_applies_the_boards_tuning():
     assert biscuit_guard.crossover_hz == M.CROSSOVER_HZ
 
 
-def test_build_guard_routes_by_board():
+def test_build_guard_routes_by_board(radar_tuning):
     assert isinstance(M.build_guard(FS, "radar"), M.RadarMultiband)
     assert isinstance(M.build_guard(FS, "biscuit"), M.BassGuard)
     assert isinstance(M.build_guard(FS, None), M.BassGuard)       # unreported -> biscuit
@@ -216,28 +216,23 @@ def test_build_guard_routes_by_board():
 
 # ─── Radar's full 4-band MBCL ────────────────────────────────────────────
 
-def test_radar_mbcl_bands_match_its_own_measured_configuration():
-    """
-    Pins the whole table against silent drift, read verbatim off
-    /system/vendor/etc/audio-algorithms/MBCL.cfg ("Radar Tuning V4.5") —
-    same reason every other measured constant in this module is pinned.
-    Band 1's ratio/threshold must also agree with RADAR_BASS_THRESHOLD_DB/
-    BASS_RATIO above, since they are the same measured band read twice.
-    """
-    assert M.RADAR_MBCL_CROSSOVERS_HZ == (70.0, 200.0, 3250.0)
-    assert M.RADAR_MBCL_IN_VOL_DB == 4.0
-    want = [
-        (20.0, -25.0, -40.0, 0.0, -12.0, 200.0, 0.0),
-        (10.0, -18.0, -40.0, 0.0, -12.0, 80.0, 0.0),
-        (3.0, -15.0, -40.0, 3.0, -4.0, 20.0, 3.0),
-        (2.0, -10.0, -40.0, 3.0, -3.0, 20.0, 0.0),
-    ]
-    got = [(b.comp_ratio, b.comp_threshold_db, b.comp_floor_db, b.comp_in_vol_db,
-            b.lim_threshold_db, b.lim_release_ms, b.lim_in_vol_db)
-           for b in M.RADAR_MBCL_BANDS]
-    assert got == want
-    assert M.RADAR_MBCL_BANDS[0].comp_ratio == M.BASS_RATIO
-    assert M.RADAR_MBCL_BANDS[0].comp_threshold_db == M.RADAR_BASS_THRESHOLD_DB
+def test_radar_without_its_tuning_keeps_the_single_band_guard(monkeypatch):
+    """No Echo files, no MBCL: Radar falls back to BassGuard at its own band
+    1 tuning, as the device does."""
+    import em_radar_tuning
+    monkeypatch.setenv(em_radar_tuning.ENV, "")
+    guard = M.build_guard(FS, "radar")
+    assert isinstance(guard, M.BassGuard)
+    assert guard.crossover_hz == M.RADAR_CROSSOVER_HZ
+
+
+def test_radar_fallback_agrees_with_the_files_band_one(radar_tuning):
+    """RADAR_CROSSOVER_HZ/RADAR_BASS_THRESHOLD_DB are band 1 of the same
+    MBCL.cfg; the fallback must not drift from the file it stands in for."""
+    m = radar_tuning.mbcl
+    assert m.crossovers_hz[0] == M.RADAR_CROSSOVER_HZ
+    assert m.bands[0].comp_threshold_db == M.RADAR_BASS_THRESHOLD_DB
+    assert m.bands[0].comp_ratio == M.BASS_RATIO
 
 
 def test_four_band_crossover_sums_flat():
@@ -247,10 +242,10 @@ def test_four_band_crossover_sums_flat():
     guards against. Floor-of-float64 flat, same standard as the single
     crossover's own 0.0000dB pin.
     """
-    assert M.four_band_flatness_db() < 1e-6
+    assert M.four_band_flatness_db((80.0, 300.0, 4000.0)) < 1e-6
 
 
-def test_radar_multiband_bypass_has_no_dynamics():
+def test_radar_multiband_bypass_has_no_dynamics(radar_tuning):
     """
     Disabled must not apply any COMPRESSION OR LIMITING — the fixed gain
     stages (system gain, and bands 3/4's own comp_inVol/lim_inVol) stay
@@ -266,7 +261,7 @@ def test_radar_multiband_bypass_has_no_dynamics():
     base = rng.standard_normal(FS * 2) * 2000.0
 
     def out_rms(amp, enabled):
-        mb = M.RadarMultiband(FS, enabled=enabled)
+        mb = M.RadarMultiband(FS, radar_tuning.mbcl, enabled=enabled)
         y = mb.process((base * amp).copy())
         return float(np.sqrt(np.mean(y[FS:] ** 2)))
 
@@ -278,7 +273,7 @@ def test_radar_multiband_bypass_has_no_dynamics():
         "enabled should show real compression on a 4x level jump")
 
 
-def test_radar_multiband_toggle_does_not_click():
+def test_radar_multiband_toggle_does_not_click(radar_tuning):
     """
     Enabling/disabling mid-stream must not step the signal level by any
     amount beyond what the LAW was actually doing — system gain and
@@ -290,7 +285,7 @@ def test_radar_multiband_toggle_does_not_click():
     """
     tone = _sine(1000, seconds=2.0, amp=0.1)
     chunk = FS // 10
-    mb = M.RadarMultiband(FS, enabled=True)
+    mb = M.RadarMultiband(FS, radar_tuning.mbcl, enabled=True)
     out = []
     for i in range(0, tone.size, chunk):
         if i == tone.size // 2:
@@ -302,7 +297,7 @@ def test_radar_multiband_toggle_does_not_click():
     assert abs(20 * np.log10(after / before)) < 2.5
 
 
-def test_radar_multiband_engages_each_band():
+def test_radar_multiband_engages_each_band(radar_tuning):
     """
     A tone placed deep inside each band, loud enough to cross that band's
     own threshold, must show real reduction there and be that tone's
@@ -319,7 +314,7 @@ def test_radar_multiband_engages_each_band():
     """
     freqs = [30.0, 120.0, 1000.0, 10000.0]
     for i, f in enumerate(freqs):
-        mb = M.RadarMultiband(FS, bass_guard_db=-40.0, enabled=True)
+        mb = M.RadarMultiband(FS, radar_tuning.mbcl, bass_guard_db=-40.0, enabled=True)
         mb.process(_sine(f, seconds=1.0, amp=0.9))
         reductions = [c.max_reduction_db for c in mb._comp]
         assert reductions[i] > 0.5, f"band {i+1} ({f}Hz) never engaged"
@@ -327,7 +322,7 @@ def test_radar_multiband_engages_each_band():
             f"band {i+1} ({f}Hz) was not its own loudest responder: {reductions}")
 
 
-def test_radar_multiband_band3_and_4_get_their_input_trim():
+def test_radar_multiband_band3_and_4_get_their_input_trim(radar_tuning):
     """
     comp_inVol is a genuine gain stage ahead of the detector — band 3's
     +3dB must make it engage at a level that would NOT cross its own
@@ -338,19 +333,20 @@ def test_radar_multiband_band3_and_4_get_their_input_trim():
     """
     amp = 0.133
     power_db = 20 * np.log10(amp) - 10 * np.log10(2)
-    assert power_db + M.RADAR_MBCL_IN_VOL_DB < -15.0
-    assert power_db + M.RADAR_MBCL_IN_VOL_DB + 3.0 > -15.0
+    m = radar_tuning.mbcl
+    assert power_db + m.in_vol_db < m.bands[2].comp_threshold_db
+    assert power_db + m.in_vol_db + m.bands[2].comp_in_vol_db > m.bands[2].comp_threshold_db
 
-    mb = M.RadarMultiband(FS, enabled=True)
+    mb = M.RadarMultiband(FS, radar_tuning.mbcl, enabled=True)
     mb.process(_sine(1000.0, seconds=1.0, amp=amp))
     assert mb._comp[2].max_reduction_db > 0.0, "band 3's input trim should have engaged it"
 
 
-def test_radar_multiband_set_params_only_touches_band_one():
+def test_radar_multiband_set_params_only_touches_band_one(radar_tuning):
     """bass_guard_db is the one dashboard control Radar's guard has, and it
     must land on band 1's floor only — bands 2-4 have no control, same as
     the limiter override."""
-    mb = M.RadarMultiband(FS, bass_guard_db=-30.0, enabled=True)
+    mb = M.RadarMultiband(FS, radar_tuning.mbcl, bass_guard_db=-30.0, enabled=True)
     assert mb._comp[0].floor_db == -30.0
     assert mb._comp[1].floor_db == -40.0
     mb.set_params(bass_guard_db=-10.0)
@@ -358,11 +354,11 @@ def test_radar_multiband_set_params_only_touches_band_one():
     assert mb._comp[1].floor_db == -40.0
 
 
-def test_raw_max_reduction_db_matches_rounded_for_both_classes():
+def test_raw_max_reduction_db_matches_rounded_for_both_classes(radar_tuning):
     """gen_vectors.py reads raw_max_reduction_db for full precision; it
     must agree with the rounded public property to two decimal places for
     both guard classes, so nothing is silently reading a different
     number."""
-    for guard in (M.BassGuard(FS), M.RadarMultiband(FS)):
+    for guard in (M.BassGuard(FS), M.RadarMultiband(FS, radar_tuning.mbcl)):
         guard.process(_sine(80.0, seconds=1.0, amp=0.8))
         assert round(guard.raw_max_reduction_db, 2) == guard.max_reduction_db

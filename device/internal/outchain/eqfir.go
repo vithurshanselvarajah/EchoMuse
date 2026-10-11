@@ -93,7 +93,7 @@ type eqFIR struct {
 // newEQFIR builds an overlap-save FIR for taps, sized for exactly
 // periodSamples new samples per call. Returns nil if taps is empty (no
 // data loaded) — callers must treat a nil *eqFIR as "run nothing",
-// mirroring the controller's fallback when radar_eq_taps.json is absent.
+// mirroring the controller's fallback without a Radar tuning.
 func newEQFIR(taps []float64, periodSamples int) *eqFIR {
 	if len(taps) == 0 {
 		return nil

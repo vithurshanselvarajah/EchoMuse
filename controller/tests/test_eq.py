@@ -85,7 +85,7 @@ def test_streaming_eq_flat_is_passthrough():
 
 # ─── Radar ParametricEQ + OutputTrim (ParametricEQ.cfg / AFE.cfg) ─────────────
 
-def test_radar_parametric_eq_response():
+def test_radar_parametric_eq_response(radar_tuning):
     """+5dB low shelf at 150Hz and +2dB peak at 80Hz (Q .9), in stock's own
     design (libasp.so 0x932e8). Its shelf sits 3dB under its boost at the
     corner (Zoelzer), not half of it as the cookbook's does, so 150Hz reads
@@ -93,7 +93,7 @@ def test_radar_parametric_eq_response():
     the decoded formulas give; the top of the band is untouched."""
     from scipy.signal import sosfreqz
     fs = 48000
-    sos = em_eq.radar_peq_sos(fs)
+    sos = em_eq.radar_peq_sos(fs, radar_tuning.peq)
     f = np.array([20.0, 80.0, 150.0, 300.0, 5000.0])
     _, h = sosfreqz(sos, worN=f, fs=fs)
     db = 20 * np.log10(np.abs(h))
@@ -115,7 +115,7 @@ def test_radar_parametric_shelf_ignores_q_as_stock_does():
     assert not np.allclose(a, b)
 
 
-def test_radar_stock_curve_applies_output_trim():
+def test_radar_stock_curve_applies_output_trim(radar_tuning):
     """A flat-ish stream through the stock curve ends 3dB hotter than the
     trim alone would explain only if the trim is applied: compare against the
     same chain with the trim removed."""
@@ -123,14 +123,12 @@ def test_radar_stock_curve_applies_output_trim():
     t = np.arange(fs // 2) / fs
     x = (4000 * np.sin(2 * np.pi * 2000 * t)).astype(np.int16).tobytes()
     a = em_eq.StreamingEQ(fs, stock_curve=True)
-    if a._fir is None:
-        pytest.skip("radar_eq_taps.json not present")
     b = em_eq.StreamingEQ(fs, stock_curve=True)
     b._trim = 1.0
     ya = np.frombuffer(a.process(x), np.int16).astype(float)[fs // 4:]
     yb = np.frombuffer(b.process(x), np.int16).astype(float)[fs // 4:]
     ratio_db = 20 * np.log10(np.sqrt((ya**2).mean()) / np.sqrt((yb**2).mean()))
-    assert abs(ratio_db - em_eq.RADAR_OUTPUT_TRIM_DB) < 0.05
+    assert abs(ratio_db - radar_tuning.trim_db) < 0.05
 
 
 # ─── Radar's volume-banded stock FIR (AFE.cfg "Volume Boundary") ─────────────
@@ -178,14 +176,11 @@ def test_stock_volume_value_is_level_minus_27_from_38_up():
         assert em_eq.stock_volume_value(_level_gain(level)) == level - 27
 
 
-def test_radar_banded_files_are_a_loudness_compensation():
+def test_radar_banded_files_are_a_loudness_compensation(radar_tuning):
     """The point of selecting by volume: the bass boost backs off as the
     volume goes up. If a future extraction ever produced five copies of one
     curve, this is where it would show."""
-    banded = em_eq._radar_eq_banded()
-    if banded is None:
-        pytest.skip("radar_eq_banded.json not present")
-    bounds, taps = banded
+    bounds, taps = em_eq._radar_eq_banded()
     assert bounds == [50, 60, 70, 80, 100]
     boost80 = [20 * np.log10(abs(np.fft.rfft(t, 48000)[80])) for t in taps]
     assert all(a > b for a, b in zip(boost80, boost80[1:])), boost80
@@ -205,12 +200,10 @@ def test_banded_fir_crossfades_on_a_switch():
     assert np.allclose(f.process(x), 250.0)
 
 
-def test_chain_without_a_volume_keeps_eq50():
+def test_chain_without_a_volume_keeps_eq50(radar_tuning):
     """Every caller that does not pass volume_gain (the controller-side
     chain) keeps the single EQ_50 curve it always had."""
     eq = em_eq.StreamingEQ(48000, stock_curve=True)
-    if eq._fir is None:
-        pytest.skip("radar_eq_taps.json not present")
     assert eq._fir_bounds is None and len(eq._fir._hs) == 1
 
 

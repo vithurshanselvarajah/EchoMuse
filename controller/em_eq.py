@@ -26,14 +26,13 @@ Usage:
     eq_pcm = em_eq.apply(voice_response, SPEAKER_RATE, bands=[0]*8, loudness=False)
 """
 
-import json
 import math
-import os
 import logging
 import numpy as np
 from scipy.signal import sosfilt
 
 import em_limiter
+import em_radar_tuning
 import em_volume
 import em_mbc  # noqa: F401  (type reference in signatures)
 
@@ -124,20 +123,12 @@ def _loudness_sos(fs: float) -> np.ndarray:
 # can track). This runs it directly via overlap-save rather than
 # approximating it.
 #
-# Extracted from the owner's own Radar firmware (NS6572/6436), for that
-# owner's personal build only — see JOURNAL/commit message for why this is
-# not something to carry into a PR: Amazon's exact filter coefficients are
-# not something this project otherwise redistributes.
-# Radar's ParametricEQ.cfg ("EQv5.4") and OutputTrim, read off the unit's
-# own /system/vendor/etc/audio-algorithms/ and AFE.cfg. AFE.cfg's
-# Playback.Algorithms runs them as  EQ (FIR) -> ParametricEQ -> MBCL ->
-# OutputTrim, so they ride the same stock_curve switch as the FIR: they are
-# the same tuning, and the FIR alone is not what stock sounds like. Of the
-# cfg's 8 biquads only the first two are not BYPASS. Both state Q=0.9.
-RADAR_PEQ_LOW_SHELF = (150.0, 5.0, 0.9)    # Fc Hz, GaindB, Q
-RADAR_PEQ_PEAK      = (80.0, 2.0, 0.9)
-RADAR_OUTPUT_TRIM_DB = 3.0                 # flat gain after MBCL's limiter
-
+# The curve, the ParametricEQ and OutputTrim are not in this repository: they
+# are read from a copy of the Echo's own files (em_radar_tuning), as the
+# device reads them from its /system. AFE.cfg's Playback.Algorithms runs
+# them as  EQ (FIR) -> ParametricEQ -> MBCL -> OutputTrim, so the
+# ParametricEQ and OutputTrim ride the same stock_curve switch as the FIR:
+# they are the same tuning, and the FIR alone is not what stock sounds like.
 
 # Stock's own biquad design (libasp.so 0x932e8, cases 4 and 5), 2026-10-10.
 # It is Zoelzer's, on K = tan(pi*fc/fs) and V = 10^(|gain|/20), and NOT the
@@ -183,31 +174,21 @@ def _stock_peak_sos(fc: float, gain_db: float, Q: float, fs: float) -> np.ndarra
                       2.0 * (K2 - 1.0) * n, (K2 + 1.0 - V * K / Q) * n]])
 
 
-def radar_peq_sos(fs: float) -> np.ndarray:
-    return np.vstack([_stock_loshelf_sos(RADAR_PEQ_LOW_SHELF[0],
-                                         RADAR_PEQ_LOW_SHELF[1], fs),
-                      _stock_peak_sos(RADAR_PEQ_PEAK[0], RADAR_PEQ_PEAK[1],
-                                      RADAR_PEQ_PEAK[2], fs)])
-
-
-_RADAR_EQ_TAPS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                   "radar_eq_taps.json")
-_radar_eq_taps_cache: np.ndarray | None = None
+def radar_peq_sos(fs: float, peq) -> np.ndarray | None:
+    """The ParametricEQ through stock's own designs; None for no biquads."""
+    sos = [_stock_loshelf_sos(fc, gain_db, fs) if kind == "LOW_SHELF"
+           else _stock_peak_sos(fc, gain_db, q, fs)
+           for kind, fc, q, gain_db in peq]
+    return np.vstack(sos) if sos else None
 
 
 def _radar_eq_taps() -> np.ndarray | None:
-    """The Radar FIR's coefficients, loaded once. None if the data file
-    is not present — this file is deliberately not required for every
-    install, only for a build that wants the stock_curve option."""
-    global _radar_eq_taps_cache
-    if _radar_eq_taps_cache is None:
-        try:
-            with open(_RADAR_EQ_TAPS_PATH) as f:
-                data = json.load(f)
-            _radar_eq_taps_cache = np.asarray(data["taps"], dtype=np.float64)
-        except FileNotFoundError:
-            return None
-    return _radar_eq_taps_cache
+    """The Radar FIR for a chain with no volume to go by: the quietest
+    band's (EQ_50 on a stock Echo 2). None without the Echo's files."""
+    t = em_radar_tuning.current()
+    if t is None or not t.fir_bands:
+        return None
+    return np.asarray(t.fir_bands[0], dtype=np.float64)
 
 
 # Radar's stock FIR is not one curve: AFE.cfg's "Equalizer FIR" lists
@@ -228,9 +209,6 @@ def _radar_eq_taps() -> np.ndarray | None:
 # through Android's speaker volume curve, which stock does not use for Alexa
 # audio at all — it put levels 78-81, 88-93, 98-101 and 108-110 one bassier
 # file down.)
-_RADAR_EQ_BANDED_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                     "radar_eq_banded.json")
-_radar_eq_banded_cache: tuple[list, list] | None = None
 
 STOCK_MIXER_LEVELS = em_volume.STOCK_MIXER_LEVELS
 
@@ -261,19 +239,13 @@ def radar_eq_band(gain: float, boundaries) -> int:
 
 
 def _radar_eq_banded():
-    """(boundaries, [taps, ...]) for Radar's volume-banded stock FIR, loaded
-    once; None if the data file is not present."""
-    global _radar_eq_banded_cache
-    if _radar_eq_banded_cache is None:
-        try:
-            with open(_RADAR_EQ_BANDED_PATH) as f:
-                data = json.load(f)
-        except FileNotFoundError:
-            return None
-        _radar_eq_banded_cache = (list(data["boundaries"]),
-                                  [np.asarray(t, dtype=np.float64)
-                                   for t in data["taps"]])
-    return _radar_eq_banded_cache
+    """(boundaries, [taps, ...]) for Radar's volume-banded stock FIR; None
+    without the Echo's files."""
+    t = em_radar_tuning.current()
+    if t is None or not t.fir_bands:
+        return None
+    return (list(t.fir_bounds),
+            [np.asarray(b, dtype=np.float64) for b in t.fir_bands])
 
 
 def _next_pow2(n: int) -> int:
@@ -496,7 +468,7 @@ class StreamingEQ:
         # curve is Radar's stock tonal correction, bands are still free to
         # shape further on top of it.
         # A chain that takes the volume (volume_gain) plays the stock FIR
-        # stock would at that volume — see _RADAR_EQ_BANDED_PATH. One that
+        # stock would at that volume — see radar_eq_band. One that
         # does not has no volume to go by and keeps EQ_50, as before.
         self._fir_bounds = None
         banded = (_radar_eq_banded()
@@ -510,15 +482,18 @@ class StreamingEQ:
         else:
             taps = _radar_eq_taps() if stock_curve else None
             if stock_curve and taps is None:
-                log.warning("[eq] stock_curve requested but radar_eq_taps.json "
-                            "is missing — falling back to the 8-band EQ alone")
+                log.warning("[eq] stock_curve requested but there is no Radar "
+                            "tuning (%s) — falling back to the 8-band EQ alone",
+                            em_radar_tuning.ENV)
             self._fir = _OverlapSaveFIR(taps) if taps is not None else None
-        # ParametricEQ and OutputTrim exist exactly when the FIR does (see
-        # RADAR_PEQ_*): the device gates them on the same condition.
-        if self._fir is not None:
-            self._peq_sos = radar_peq_sos(self._sample_rate)
-            self._peq_zi = np.zeros((self._peq_sos.shape[0], 2), dtype=np.float64)
-            self._trim = 10 ** (RADAR_OUTPUT_TRIM_DB / 20.0)
+        # ParametricEQ and OutputTrim exist exactly when the FIR does: the
+        # device gates them on the same condition.
+        tuning = em_radar_tuning.current() if self._fir is not None else None
+        if tuning is not None:
+            self._peq_sos = radar_peq_sos(self._sample_rate, tuning.peq)
+            if self._peq_sos is not None:
+                self._peq_zi = np.zeros((self._peq_sos.shape[0], 2), dtype=np.float64)
+            self._trim = 10 ** (tuning.trim_db / 20.0)
         else:
             self._peq_sos = None
             self._trim = 1.0
@@ -665,7 +640,8 @@ class StreamingEQ:
             samples = self._apply_volume(samples)
         if self._fir is not None:
             samples = self._fir.process(samples)
-            samples, self._peq_zi = sosfilt(self._peq_sos, samples, zi=self._peq_zi)
+            if self._peq_sos is not None:
+                samples, self._peq_zi = sosfilt(self._peq_sos, samples, zi=self._peq_zi)
         if self._sos is not None:
             samples, self._zi = sosfilt(self._sos, samples, zi=self._zi)
         if self._guard is not None:

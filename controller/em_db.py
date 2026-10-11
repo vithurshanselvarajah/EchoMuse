@@ -281,10 +281,10 @@ DEFAULT_DEVICE_CONFIG = {
     "wakeMic":          0,
     "eqBands":          [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
     "eqLoudness":       False,
-    # Radar's own stock FIR curve (em_eq._OverlapSaveFIR), layered under the
-    # 8 bands above rather than instead of them. Only meaningful on a Radar
-    # device not running output_chain on its own firmware, and only when
-    # radar_eq_taps.json is present — see em_eq.py. On by default: without
+    # Radar's own stock curve (FIR, ParametricEQ, OutputTrim), layered under
+    # the 8 bands above rather than instead of them. Read from the Echo's own
+    # files: by the device for its output chain, and by the controller only
+    # with ECHOMUSE_RADAR_TUNING (em_radar_tuning). On by default: without
     # it a Radar's speaker has no audible bass, and it changes nothing on
     # any other board.
     "eqStockCurve":     True,

@@ -83,14 +83,6 @@ DEFAULT_THRESHOLD_DB    = -1.0
 DEFAULT_LOOKAHEAD_MS    = 5.0
 DEFAULT_RELEASE_MS      = 150.0
 
-# Radar's own "Full-band limiter" from its MBCL.cfg ("Radar Tuning V4.5"),
-# read off the owner's own firmware — not these generic defaults, which were
-# never measured against Radar's hardware. There is currently no dashboard
-# control for either value on any board, so applying this per-board (see
-# em_player.py) isn't taking a tuning choice away from anyone.
-RADAR_THRESHOLD_DB = -3.0
-RADAR_RELEASE_MS   = 20.0
-
 # `release_ms` is the time to recover THIS many dB of gain reduction, which
 # is the only way to state a slew rate that means the same thing whether the
 # limiter is pulling 1dB or 12dB. Documented on the dashboard control too.
@@ -506,15 +498,35 @@ class StockLimiter:
         return tail
 
 
+def params_for(board_id: str | None, threshold_db: float, release_ms: float
+               ) -> tuple[float, float]:
+    """The threshold and release a board's limiter runs at: Radar's, with its
+    tuning loaded, are its MBCL full-band limiter's whatever the config
+    carries; every other board's are the configured ones. For build_limiter
+    and every later update of the same limiter."""
+    if board_id == "radar":
+        import em_radar_tuning
+        tuning = em_radar_tuning.current()
+        if tuning is not None and tuning.mbcl is not None:
+            return tuning.mbcl.full_band_threshold_db, tuning.mbcl.full_band_release_ms
+    return threshold_db, release_ms
+
+
 def build_limiter(sample_rate: int, board_id: str | None, enabled: bool = True,
                   threshold_db: float = DEFAULT_THRESHOLD_DB,
                   release_ms: float = DEFAULT_RELEASE_MS):
-    """The full-band limiter a board's chain runs. Radar's is MBCL's own
-    (StockLimiter at RADAR_THRESHOLD_DB / RADAR_RELEASE_MS, whatever the
-    config carries — there is no control for either); every other board
-    keeps Limiter at the configured values."""
+    """The full-band limiter a board's chain runs. Radar's, with its tuning
+    loaded (em_radar_tuning), is MBCL's own "Full-band limiter" (StockLimiter
+    at its own threshold and release, whatever the config carries — there is
+    no control for either); every other board keeps Limiter at the
+    configured values."""
     if board_id == "radar":
-        return StockLimiter(sample_rate, threshold_db=RADAR_THRESHOLD_DB,
-                            release_ms=RADAR_RELEASE_MS, enabled=enabled)
+        import em_radar_tuning
+        tuning = em_radar_tuning.current()
+        if tuning is not None and tuning.mbcl is not None:
+            m = tuning.mbcl
+            return StockLimiter(sample_rate, threshold_db=m.full_band_threshold_db,
+                                release_ms=m.full_band_release_ms,
+                                in_vol_db=m.full_band_in_vol_db, enabled=enabled)
     return Limiter(sample_rate, threshold_db=threshold_db,
                    release_ms=release_ms, enabled=enabled)

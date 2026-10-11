@@ -12,8 +12,6 @@ is correct, chunking can never matter; if it is wrong, it usually only
 shows up for some chunk sizes and not others.
 """
 
-import json
-import os
 
 import numpy as np
 import pytest
@@ -118,26 +116,20 @@ def test_impulse_filter_is_identity_delayed_by_nothing():
 
 # ─── The actual Radar data, if present ─────────────────────────────────────
 #
-# Skipped rather than failed when the data file is absent — it is
-# deliberately not shipped for every install (see em_eq.py's comment), and
-# a personal build without it must not fail CI-shaped checks over a file
-# that was never supposed to be there.
+# Skipped rather than failed without ECHOMUSE_RADAR_TUNING: the Echo's files
+# are not in this repository (see em_radar_tuning).
 
-_TAPS_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                          "radar_eq_taps.json")
-_has_radar_taps = os.path.exists(_TAPS_PATH)
+def _radar_taps(radar_tuning):
+    return np.asarray(radar_tuning.fir_bands[0])
 
 
-@pytest.mark.skipif(not _has_radar_taps, reason="radar_eq_taps.json not present")
-def test_radar_taps_load_and_match_the_measured_response():
+def test_radar_taps_load_and_match_the_measured_response(radar_tuning):
     """Sanity-checks the loaded data against the frequency-response shape
     measured directly from the extracted firmware file (see the session's
     own FFT analysis): strong bass lift around 80Hz, a steep drop by
     200Hz. Catches a taps file that loaded but is truncated, reordered or
     otherwise not what it claims to be."""
-    with open(_TAPS_PATH) as f:
-        data = json.load(f)
-    taps = np.asarray(data["taps"])
+    taps = _radar_taps(radar_tuning)
     assert taps.size == 2048
 
     from scipy.signal import freqz
@@ -151,13 +143,9 @@ def test_radar_taps_load_and_match_the_measured_response():
     assert at(200) < -3.0, "expected a steep drop by 200Hz"
 
 
-@pytest.mark.skipif(not _has_radar_taps, reason="radar_eq_taps.json not present")
-def test_stock_curve_is_additive_with_the_8_band_eq():
+def test_stock_curve_is_additive_with_the_8_band_eq(radar_tuning):
     """stock_curve must layer under the 8 bands, not replace them — a
     user who also dials in band gains should still hear both."""
-    with open(_TAPS_PATH) as f:
-        taps = np.asarray(json.load(f)["taps"])
-
     rng = np.random.default_rng(4)
     pcm = (rng.standard_normal(8192) * 5000).astype(np.int16).tobytes()
 
@@ -176,10 +164,10 @@ def test_stock_curve_is_additive_with_the_8_band_eq():
 
 
 def test_stock_curve_without_the_data_file_falls_back_quietly(monkeypatch):
-    """A build without radar_eq_taps.json must not crash — it should run
+    """A controller without a Radar's files must not crash — it should run
     as if stock_curve were never requested."""
-    monkeypatch.setattr(em_eq, "_radar_eq_taps_cache", None)
-    monkeypatch.setattr(em_eq, "_RADAR_EQ_TAPS_PATH", "/does/not/exist.json")
+    import em_radar_tuning
+    monkeypatch.setenv(em_radar_tuning.ENV, "")
     eq = em_eq.StreamingEQ(RATE, bands=[0.0] * 8, stock_curve=True)
     assert eq._fir is None
     pcm = (np.full(1000, 1234)).astype(np.int16).tobytes()

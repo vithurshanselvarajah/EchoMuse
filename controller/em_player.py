@@ -707,9 +707,8 @@ class MediaSession:
         is_radar = device.board_id == "radar"
 
         def _limiter_params():
-            if is_radar:
-                return em_limiter.RADAR_THRESHOLD_DB, em_limiter.RADAR_RELEASE_MS
-            return device.limiter_threshold, device.limiter_release
+            return em_limiter.params_for(device.board_id, device.limiter_threshold,
+                                         device.limiter_release)
 
         # A device that runs the chain itself gets the music untouched.
         if device.output_chain_on_device:
