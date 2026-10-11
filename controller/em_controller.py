@@ -566,7 +566,7 @@ class Device:
         self.last_utterance_pcm: bytes | None = None
         self.eq_bands:      list  = [0.0] * 8
         self.eq_loudness:   bool  = False
-        self.eq_stock_curve: bool = False
+        self.eq_stock_curve: bool = True
         self.bass_guard_enabled: bool  = True
         self.bass_guard_db:      float = em_mbc.DEFAULT_BASS_GUARD_DB
         self.limiter_enabled:   bool  = True
@@ -4666,7 +4666,7 @@ async def handle_control(ws: WebSocketServerProtocol, secure: bool = False):
             await api.notify_pair_request(device_id, "link")
         device.eq_bands      = config.get("eqBands", [0.0] * 8)
         device.eq_loudness   = bool(config.get("eqLoudness", False))
-        device.eq_stock_curve = bool(config.get("eqStockCurve", False))
+        device.eq_stock_curve = bool(config.get("eqStockCurve", True))
         device.bass_guard_enabled = bool(config.get("bassGuardEnabled", True))
         device.bass_guard_db      = float(config.get(
             "bassGuardDb", em_mbc.DEFAULT_BASS_GUARD_DB))

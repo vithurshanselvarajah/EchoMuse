@@ -9768,7 +9768,7 @@ function DeviceConfigForm({ config, onChange, disabled, sections, onScopeChange,
               <div style={{ marginTop: 8, ...inputStyle }}>
                 <Toggle label="Radar's own stock EQ curve"
                   sub="Amazon's real tuning for this speaker, layered under the bands above"
-                  value={config.eqStockCurve ?? false} onChange={v => set('eqStockCurve', v)}/>
+                  value={config.eqStockCurve ?? true} onChange={v => set('eqStockCurve', v)}/>
               </div>
             )}
             <div style={{ marginTop: 8, ...inputStyle }}>

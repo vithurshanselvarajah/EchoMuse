@@ -18,11 +18,12 @@ type Params struct {
 	LimiterEnabled     bool
 	LimiterThresholdDb float64
 	LimiterReleaseMs   float64
-	// StockCurve runs Radar's own stock FIR EQ (eqFIR) ahead of the 8 bands
-	// above, additively — see controller/em_eq.py's stock_curve. Has no
-	// effect at all on a board without a loaded curve (only Radar, and
-	// only when the embedded taps parsed), same as the controller leaving
-	// it unused for every other board.
+	// StockCurve runs Radar's own stock FIR EQ (eqFIR), ParametricEQ and
+	// OutputTrim ahead of the 8 bands above, additively — see
+	// controller/em_eq.py's stock_curve. Has no effect at all on a board
+	// without a loaded curve (only Radar, and only when the Echo's own
+	// files loaded — RadarTuning). On by default: without it a Radar's
+	// speaker has no audible bass (Radar1, 2026-10-10).
 	StockCurve bool
 }
 
@@ -35,6 +36,7 @@ func DefaultParams() Params {
 		LimiterEnabled:     true,
 		LimiterThresholdDb: -1,
 		LimiterReleaseMs:   150,
+		StockCurve:         true,
 	}
 }
 
