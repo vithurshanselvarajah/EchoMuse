@@ -1409,6 +1409,8 @@ async def _apply_live_config(device_id: str, live, effective: dict) -> None:
         live.eq_bands = effective["eqBands"]
     if "eqLoudness" in effective:
         live.eq_loudness = bool(effective["eqLoudness"])
+    if "eqStockCurve" in effective:
+        live.eq_stock_curve = bool(effective["eqStockCurve"])
     # The output chain is consumed HERE, not on the device — it ignores these
     # five keys entirely — so this mirror is the only thing that carries them.
     # Missing it meant a push wrote the database, sent JSON the device threw
@@ -6687,6 +6689,11 @@ def _merge_device(row, boot: dict | None = None) -> dict:
         # vanish when a device does; a live report always wins.
         "baseOs":          (getattr(live, "base_os", None) if live else None)
                            or row["base_os"],
+        # Reported at registration (em_controller._handle_control), live
+        # only — not persisted, so an offline device reads null here rather
+        # than a stale guess. Only used by the dashboard to gate the
+        # Radar-only stock EQ curve toggle.
+        "boardId":         getattr(live, "board_id", None) if live else None,
         # `uname -m` / `uname -r` from the register message, stored value when
         # offline (schema v23). Null from firmware that does not send them.
         "kernelArch":      (getattr(live, "kernel_arch", None) if live else None)

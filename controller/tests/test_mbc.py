@@ -170,3 +170,195 @@ def test_the_parameters_come_from_the_measured_stock_configuration():
     assert M.BASS_RATIO == 20.0
     assert M.BASS_THRESHOLD_DB == -50.0
     assert M.BASS_RELEASE_MS == 200.0
+
+
+def test_radar_parameters_come_from_its_own_measured_configuration():
+    """
+    Radar runs its own MBCL.cfg ("Radar Tuning V4.5"), not biscuit's — read
+    off a Radar unit's stock firmware, not chosen. Ratio and release match
+    biscuit's; only the crossover and threshold differ (the rest of band 1
+    is why only this one band is ported — see the module docstring).
+    """
+    assert M.RADAR_CROSSOVER_HZ == 70.0
+    assert M.RADAR_BASS_THRESHOLD_DB == -25.0
+
+
+@pytest.mark.parametrize("board_id,crossover_hz,threshold_db", [
+    ("biscuit", M.CROSSOVER_HZ, M.BASS_THRESHOLD_DB),
+    ("radar", M.RADAR_CROSSOVER_HZ, M.RADAR_BASS_THRESHOLD_DB),
+    (None, M.CROSSOVER_HZ, M.BASS_THRESHOLD_DB),       # no board reported yet
+    ("dot3", M.CROSSOVER_HZ, M.BASS_THRESHOLD_DB),     # unrecognised -> biscuit
+])
+def test_tuning_for_selects_by_board(board_id, crossover_hz, threshold_db):
+    assert M._tuning_for(board_id) == (crossover_hz, threshold_db)
+
+
+def test_for_stream_applies_the_boards_tuning(radar_tuning):
+    """for_stream is the production call site's path (em_player.py/
+    em_controller.py) — this pins that board_id actually reaches a real
+    instance, not just the lookup table above. Radar's single-band tuning
+    constants now feed its full RadarMultiband (band 1) rather than a
+    BassGuard — see build_guard."""
+    guard = M.for_stream(FS, enabled=True, board_id="radar")
+    assert isinstance(guard, M.RadarMultiband)
+    assert guard.enabled
+    biscuit_guard = M.for_stream(FS, enabled=True, board_id="biscuit")
+    assert isinstance(biscuit_guard, M.BassGuard)
+    assert biscuit_guard.crossover_hz == M.CROSSOVER_HZ
+
+
+def test_build_guard_routes_by_board(radar_tuning):
+    assert isinstance(M.build_guard(FS, "radar"), M.RadarMultiband)
+    assert isinstance(M.build_guard(FS, "biscuit"), M.BassGuard)
+    assert isinstance(M.build_guard(FS, None), M.BassGuard)       # unreported -> biscuit
+    assert isinstance(M.build_guard(FS, "dot3"), M.BassGuard)     # unrecognised -> biscuit
+
+
+# ─── Radar's full 4-band MBCL ────────────────────────────────────────────
+
+def test_radar_without_its_tuning_keeps_the_single_band_guard(monkeypatch):
+    """No Echo files, no MBCL: Radar falls back to BassGuard at its own band
+    1 tuning, as the device does."""
+    import em_radar_tuning
+    monkeypatch.setenv(em_radar_tuning.ENV, "")
+    guard = M.build_guard(FS, "radar")
+    assert isinstance(guard, M.BassGuard)
+    assert guard.crossover_hz == M.RADAR_CROSSOVER_HZ
+
+
+def test_radar_fallback_agrees_with_the_files_band_one(radar_tuning):
+    """RADAR_CROSSOVER_HZ/RADAR_BASS_THRESHOLD_DB are band 1 of the same
+    MBCL.cfg; the fallback must not drift from the file it stands in for."""
+    m = radar_tuning.mbcl
+    assert m.crossovers_hz[0] == M.RADAR_CROSSOVER_HZ
+    assert m.bands[0].comp_threshold_db == M.RADAR_BASS_THRESHOLD_DB
+    assert m.bands[0].comp_ratio == M.BASS_RATIO
+
+
+def test_four_band_crossover_sums_flat():
+    """
+    The property the whole class exists to get right — see
+    four_band_flatness_db's docstring for the naive 1.59dB failure this
+    guards against. Floor-of-float64 flat, same standard as the single
+    crossover's own 0.0000dB pin.
+    """
+    assert M.four_band_flatness_db((80.0, 300.0, 4000.0)) < 1e-6
+
+
+def test_radar_multiband_bypass_has_no_dynamics(radar_tuning):
+    """
+    Disabled must not apply any COMPRESSION OR LIMITING — the fixed gain
+    stages (system gain, and bands 3/4's own comp_inVol/lim_inVol) stay
+    either way, see process's comment on why, so there is no single fixed
+    "unity" gain to compare against. Linearity is the property that
+    actually distinguishes this from an active law: a fixed-gain, purely
+    filtered signal scales exactly with its input; a compressed one does
+    not. Fed the SAME shaped noise at two levels four octaves apart with
+    the law active, band 1 alone shows over 20dB of compression — so this
+    is a real discriminator, not a tautology.
+    """
+    rng = np.random.default_rng(3)
+    base = rng.standard_normal(FS * 2) * 2000.0
+
+    def out_rms(amp, enabled):
+        mb = M.RadarMultiband(FS, radar_tuning.mbcl, enabled=enabled)
+        y = mb.process((base * amp).copy())
+        return float(np.sqrt(np.mean(y[FS:] ** 2)))
+
+    quiet, loud = out_rms(1.0, False), out_rms(4.0, False)
+    assert abs(20 * np.log10(loud / quiet) - 20 * np.log10(4.0)) < 0.01
+
+    quiet_on, loud_on = out_rms(1.0, True), out_rms(4.0, True)
+    assert 20 * np.log10(loud_on / quiet_on) < 20 * np.log10(4.0) - 1.0, (
+        "enabled should show real compression on a 4x level jump")
+
+
+def test_radar_multiband_toggle_does_not_click(radar_tuning):
+    """
+    Enabling/disabling mid-stream must not step the signal level by any
+    amount beyond what the LAW was actually doing — system gain and
+    every per-band trim stay fixed across the toggle (see process's
+    comment), so what's left to disappear is only the compression
+    engaged at this signal's level, measured separately below as
+    ~1.17dB. 2.5dB gives that real, expected step room without passing
+    a toggle that is colouring the signal for some other reason.
+    """
+    tone = _sine(1000, seconds=2.0, amp=0.1)
+    chunk = FS // 10
+    mb = M.RadarMultiband(FS, radar_tuning.mbcl, enabled=True)
+    out = []
+    for i in range(0, tone.size, chunk):
+        if i == tone.size // 2:
+            mb.set_params(enabled=False)
+        out.append(mb.process(tone[i:i + chunk]))
+    y = np.concatenate(out)
+    before = float(np.sqrt(np.mean(y[FS - 4800:FS] ** 2)))
+    after = float(np.sqrt(np.mean(y[FS:FS + 4800] ** 2)))
+    assert abs(20 * np.log10(after / before)) < 2.5
+
+
+def test_radar_multiband_engages_each_band(radar_tuning):
+    """
+    A tone placed deep inside each band, loud enough to cross that band's
+    own threshold, must show real reduction there and be that tone's
+    LARGEST reduction among the four bands.
+
+    This does not assert the OTHERS stay at zero: band 1's law is 20:1
+    from -25dB, aggressive enough that even the genuine ~24dB/octave
+    rolloff of an adjacent LR4 crossover still leaks enough into it to
+    register — measured at 120Hz (deep in band 2 on a log scale,
+    sqrt(70*200)=118Hz) engaging band 1 nearly as hard as band 2 itself.
+    That is a real property of a finite-slope crossover, not a bug this
+    test exists to catch; what matters is that each band's OWN law is
+    what responds hardest to content in its own range.
+    """
+    freqs = [30.0, 120.0, 1000.0, 10000.0]
+    for i, f in enumerate(freqs):
+        mb = M.RadarMultiband(FS, radar_tuning.mbcl, bass_guard_db=-40.0, enabled=True)
+        mb.process(_sine(f, seconds=1.0, amp=0.9))
+        reductions = [c.max_reduction_db for c in mb._comp]
+        assert reductions[i] > 0.5, f"band {i+1} ({f}Hz) never engaged"
+        assert reductions[i] == max(reductions), (
+            f"band {i+1} ({f}Hz) was not its own loudest responder: {reductions}")
+
+
+def test_radar_multiband_band3_and_4_get_their_input_trim(radar_tuning):
+    """
+    comp_inVol is a genuine gain stage ahead of the detector — band 3's
+    +3dB must make it engage at a level that would NOT cross its own
+    -15dB threshold on its own, once the ALWAYS-ON system gain (+4dB) is
+    also accounted for. Stock's detector is POWER (StockCompressor), so a
+    sine reads 3dB under its peak: amp=0.133 is -17.5dBFS peak, -20.5dB
+    power; +4 lands at -16.5, under -15, and +4+3 at -13.5, over it.
+    """
+    amp = 0.133
+    power_db = 20 * np.log10(amp) - 10 * np.log10(2)
+    m = radar_tuning.mbcl
+    assert power_db + m.in_vol_db < m.bands[2].comp_threshold_db
+    assert power_db + m.in_vol_db + m.bands[2].comp_in_vol_db > m.bands[2].comp_threshold_db
+
+    mb = M.RadarMultiband(FS, radar_tuning.mbcl, enabled=True)
+    mb.process(_sine(1000.0, seconds=1.0, amp=amp))
+    assert mb._comp[2].max_reduction_db > 0.0, "band 3's input trim should have engaged it"
+
+
+def test_radar_multiband_set_params_only_touches_band_one(radar_tuning):
+    """bass_guard_db is the one dashboard control Radar's guard has, and it
+    must land on band 1's floor only — bands 2-4 have no control, same as
+    the limiter override."""
+    mb = M.RadarMultiband(FS, radar_tuning.mbcl, bass_guard_db=-30.0, enabled=True)
+    assert mb._comp[0].floor_db == -30.0
+    assert mb._comp[1].floor_db == -40.0
+    mb.set_params(bass_guard_db=-10.0)
+    assert mb._comp[0].floor_db == -10.0
+    assert mb._comp[1].floor_db == -40.0
+
+
+def test_raw_max_reduction_db_matches_rounded_for_both_classes(radar_tuning):
+    """gen_vectors.py reads raw_max_reduction_db for full precision; it
+    must agree with the rounded public property to two decimal places for
+    both guard classes, so nothing is silently reading a different
+    number."""
+    for guard in (M.BassGuard(FS), M.RadarMultiband(FS, radar_tuning.mbcl)):
+        guard.process(_sine(80.0, seconds=1.0, amp=0.8))
+        assert round(guard.raw_max_reduction_db, 2) == guard.max_reduction_db
