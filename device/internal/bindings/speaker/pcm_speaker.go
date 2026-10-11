@@ -595,7 +595,7 @@ func (p *PcmSpeaker) silenceLoop() {
 		if wideResponse {
 			wide := p.mixer.MixResponse(p.responseMix, voice, music, p.duckTarget.Load(), responseGains)
 			if applied := p.chain.ProcessFloat(wide, responseGains); applied != nil {
-				log.Printf("[speaker] output chain: %s", applied)
+				log.Printf("[speaker] output chain: %s", p.chain.Describe(*applied))
 			}
 			out = voice
 			// A chain that takes the volume (Radar) has applied it already,
@@ -618,7 +618,7 @@ func (p *PcmSpeaker) silenceLoop() {
 			}
 			if process {
 				if applied := p.chain.Process(out); applied != nil {
-					log.Printf("[speaker] output chain: %s", applied)
+					log.Printf("[speaker] output chain: %s", p.chain.Describe(*applied))
 				}
 				// On Radar the active chain applies the volume itself, AHEAD
 				// of its compressors (outchain.Chain.TakesVolume), so it must

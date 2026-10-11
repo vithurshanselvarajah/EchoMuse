@@ -217,6 +217,27 @@ func NewForBoard(sampleRate int, boardID string, rt *RadarTuning) *Chain {
 	return c
 }
 
+// Describe is p.String() as this chain runs it. On Radar with its stock
+// tuning the limiter is MBCL's own, whatever p says, and the stock curve and
+// the jack bypass are named; elsewhere it is p.String() exactly.
+func (c *Chain) Describe(p Params) string {
+	if c.limFixed {
+		p.LimiterThresholdDb, p.LimiterReleaseMs = c.limThresholdDb, c.limReleaseMs
+	}
+	s := p.String()
+	if c.firBands != nil {
+		on := "off"
+		if p.StockCurve && !p.Jack {
+			on = "on"
+		}
+		s += " stock_curve=" + on
+	}
+	if p.Jack {
+		s += " jack"
+	}
+	return s
+}
+
 // TakesVolume reports whether this chain applies the volume itself, ahead
 // of its stages (Radar). When it does and is active, the caller must not
 // also apply the volume after it.

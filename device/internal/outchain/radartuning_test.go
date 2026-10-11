@@ -144,3 +144,25 @@ func TestRadarJackLeavesOutTheSpeakerStages(t *testing.T) {
 		t.Fatalf("speaker: fir %v, guard skipped %v", c.fir != nil, c.skipGuard)
 	}
 }
+
+// The log line names what a Radar chain actually runs: MBCL's limiter, not
+// the one in Params, and whether the stock curve is in.
+func TestDescribeNamesWhatRadarRuns(t *testing.T) {
+	rt, err := LoadRadarTuning(filepath.Join("testdata", "radar_tuning"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := DefaultParams()
+	if got, want := NewForBoard(48000, "radar", rt).Describe(p),
+		"eq=flat speech_boost=off guard=-30dB limiter=-2dB/30ms stock_curve=on"; got != want {
+		t.Errorf("speaker: got %q, want %q", got, want)
+	}
+	p.GuardEnabled, p.Jack = false, true
+	if got, want := NewForBoard(48000, "radar", rt).Describe(p),
+		"eq=flat speech_boost=off guard=off limiter=-2dB/30ms stock_curve=off jack"; got != want {
+		t.Errorf("jack: got %q, want %q", got, want)
+	}
+	if got, want := New(48000).Describe(DefaultParams()), DefaultParams().String(); got != want {
+		t.Errorf("biscuit: got %q, want %q", got, want)
+	}
+}
