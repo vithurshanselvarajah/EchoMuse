@@ -281,6 +281,12 @@ DEFAULT_DEVICE_CONFIG = {
     "wakeMic":          0,
     "eqBands":          [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
     "eqLoudness":       False,
+    # Radar's own stock FIR curve (em_eq._OverlapSaveFIR), layered under the
+    # 8 bands above rather than instead of them. Only meaningful on a Radar
+    # device not running output_chain on its own firmware, and only when
+    # radar_eq_taps.json is present — see em_eq.py. Off by default: it is a
+    # personal-build option, not a fleet default.
+    "eqStockCurve":     False,
     # Output limiter. On by default: the EQ chain hard-clipped anything it
     # boosted past full scale (#231), and a default that leaves that in place
     # protects nobody. Threshold/release are config rather than constants

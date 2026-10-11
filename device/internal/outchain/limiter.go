@@ -9,6 +9,19 @@ const (
 	ceiling = 32767.0
 
 	lookaheadMs = 5.0
+
+	// radarLimiterThresholdDb/radarLimiterReleaseMs: the "Full-band limiter"
+	// section of Radar's own MBCL.cfg ("Radar Tuning V4.5"), read off the
+	// owner's own firmware — not EchoMuse's generic limiter defaults
+	// (-1dB/150ms), which were never measured against Radar's hardware.
+	// Overridden in Chain.apply regardless of what LimiterThresholdDb/
+	// LimiterReleaseMs a config push carries, same reasoning as the bass
+	// guard's crossover: there is currently no dashboard control for either
+	// value on any board, so this isn't taking anything away from a user
+	// who could otherwise tune it, and Radar's own measured pair is a
+	// better starting point than a value measured on a different speaker.
+	radarLimiterThresholdDb = -3.0
+	radarLimiterReleaseMs   = 20.0
 )
 
 // limiter is em_limiter.Limiter as a per-sample loop: look-ahead peak
@@ -150,4 +163,12 @@ func (l *limiter) reset() {
 	}
 	l.di, l.dqHead, l.dqLen, l.seq = 0, 0, 0, 0
 	l.gainDb = 0
+}
+
+func (l *limiter) setEnabled(on bool) { l.enabled = on }
+
+func (l *limiter) takeStats() (float64, uint64, uint64) {
+	r := l.maxReductionDb
+	l.maxReductionDb = 0
+	return r, l.clipped, l.clippedBypassed
 }

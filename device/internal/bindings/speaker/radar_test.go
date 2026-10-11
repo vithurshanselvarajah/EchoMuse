@@ -11,6 +11,16 @@ import (
 	"github.com/wilbowes/EchoMuse/internal/bindings/mixer"
 )
 
+// Pins the DAC at the codec's 0dB, where stock leaves it — see the
+// constant's doc comment. Above 127 this control adds digital gain to a
+// chain whose limiter already puts peaks at full scale, which clips inside
+// the DAC; a loudness difference belongs in the output chain instead.
+func TestRadarDacUnityIsTheCodecsZeroDB(t *testing.T) {
+	if radarDacUnity != "127" {
+		t.Fatalf("radarDacUnity = %q, want \"127\"", radarDacUnity)
+	}
+}
+
 func profileXML(values string) string {
 	return `<mixercontrol><path name="ext_headphone_output" value="turnon"><kctl name="biquad coefficients" value="bad"/></path><path name="ext_speaker_output" value="turnon"><kctl name="biquad coefficients" value="` + values + `"/></path></mixercontrol>`
 }
@@ -102,7 +112,7 @@ func TestRadarUnmuteSequenceAndStreamFailure(t *testing.T) {
 		t.Fatal(waits)
 	}
 	last := m.writes[len(m.writes)-1]
-	if last.Ctl != mixer.PlaybackVolume || last.Args[0] != "127" {
+	if last.Ctl != mixer.PlaybackVolume || last.Args[0] != radarDacUnity {
 		t.Fatal(last)
 	}
 	for failWait := 1; failWait <= len(waits); failWait++ {

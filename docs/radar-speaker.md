@@ -12,6 +12,9 @@ thermal tuning.
 
 ## Listening tests
 
+> Superseded for playback tuning by [radar-audio.md](radar-audio.md): on
+> Radar the guard is now stock's MBCL, so keep it on for stock's sound.
+
 When judging Radar's sound, compare with the bass guard disabled and the EQ
 flat; leave the limiter enabled. The guard is tuned for the Dot's smaller
 driver and may remove bass the Echo 2 woofer can reproduce. On one Echo 2
@@ -48,6 +51,9 @@ Application OTA delivers the setup; the controller's existing startup-script
 synchronization delivers supervisor changes. No kernel or emOS flash is needed.
 
 ## Playback tuning for Radar testers
+
+> Superseded by [radar-audio.md](radar-audio.md), which lists the settings
+> that match stock.
 
 The default bass guard and the dashboard's Music EQ preset were tuned for the
 Dot 2 driver. A Radar tester reported the guard reaching its full 30dB depth

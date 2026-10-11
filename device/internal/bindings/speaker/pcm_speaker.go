@@ -251,7 +251,7 @@ func NewPcmSpeaker(echoTap func([]byte), levelTap func(rms float64)) (*PcmSpeake
 		deadCh:        make(chan struct{}),
 		echoTap:       echoTap,
 		levelTap:      levelTap,
-		chain:         outchain.New(48000),
+		chain:         outchain.NewForBoard(48000, board.IDOf(board.Current())),
 		chainBuf:      make([]byte, periodBytes),
 		srcBuf:        make([]byte, periodBytes),
 		responseMix:   make([]float64, periodSize*2),
@@ -263,6 +263,9 @@ func NewPcmSpeaker(echoTap func([]byte), levelTap func(rms float64)) (*PcmSpeake
 	s.mixer.SetGainImmediate(unityGain)
 	s.response.setDB(0)
 	s.response.cur = 1
+	// Silent until told a volume, like s.vol — a chain that takes the
+	// volume must not play its first period at full scale.
+	s.chain.SetVolumeGain(0)
 	if err := s.Init(); err != nil {
 		return nil, err
 	}
@@ -569,7 +572,13 @@ func (p *PcmSpeaker) silenceLoop() {
 				log.Printf("[speaker] output chain: %s", applied)
 			}
 			out = voice
-			p.vol.applyFloat(wide, out, response.volumeTarget)
+			// A chain that takes the volume (Radar) has applied it already,
+			// ahead of its compressors.
+			if p.chain.TookVolume() {
+				p.vol.settleFloat(wide, out)
+			} else {
+				p.vol.applyFloat(wide, out, response.volumeTarget)
+			}
 		} else {
 			out = p.mixer.Mix(voice, music, p.duckTarget.Load())
 			process := out != nil
@@ -585,7 +594,16 @@ func (p *PcmSpeaker) silenceLoop() {
 				if applied := p.chain.Process(out); applied != nil {
 					log.Printf("[speaker] output chain: %s", applied)
 				}
-				p.vol.apply(out)
+				// On Radar the active chain applies the volume itself, AHEAD
+				// of its compressors (outchain.Chain.TakesVolume), so it must
+				// not be applied again here. softVolume still tracks the
+				// target, so the day the chain goes inactive it carries on
+				// from the right gain.
+				if p.chain.TookVolume() {
+					p.vol.settle()
+				} else {
+					p.vol.apply(out)
+				}
 			} else {
 				p.vol.settle()
 			}
@@ -816,7 +834,11 @@ const dacUnity = "127"
 
 // SetVolume sets the playback volume as a device level (0..127, 0.5dB per
 // step, unity at 127). Takes effect from the next period, ramped across it.
-func (p *PcmSpeaker) SetVolume(level int) { p.vol.set(VolumeGain(level)) }
+func (p *PcmSpeaker) SetVolume(level int) {
+	g := VolumeGain(level)
+	p.vol.set(g)
+	p.chain.SetVolumeGain(g)
+}
 
 // SetResponseGainDB sets the gain applied only to the voice plane, before it is
 // mixed with music. It is relative to the device volume and dynamically capped

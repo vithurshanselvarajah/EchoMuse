@@ -566,6 +566,7 @@ class Device:
         self.last_utterance_pcm: bytes | None = None
         self.eq_bands:      list  = [0.0] * 8
         self.eq_loudness:   bool  = False
+        self.eq_stock_curve: bool = False
         self.bass_guard_enabled: bool  = True
         self.bass_guard_db:      float = em_mbc.DEFAULT_BASS_GUARD_DB
         self.limiter_enabled:   bool  = True
@@ -1599,12 +1600,19 @@ def get_device(device_id: str) -> Device | None:
 
 
 def _limiter_for(device):
-    """Adapter: a Device's limiter config -> em_limiter.for_stream."""
-    return em_limiter.for_stream(
-        SPEAKER_RATE,
-        device.limiter_enabled,
-        device.limiter_threshold,
-        device.limiter_release,
+    """Adapter: a Device's limiter config -> em_limiter.for_stream.
+
+    Radar overrides the config value regardless of what it carries, same
+    reasoning and same override as em_player.py's _limiter_params — this
+    path (voice turns and announcements) had never picked that up, so a
+    Radar device got the generic -1dB/150ms here while its music got the
+    real -3dB/20ms."""
+    if not device.limiter_enabled:
+        return None
+    return em_limiter.build_limiter(
+        SPEAKER_RATE, device.board_id,
+        threshold_db=device.limiter_threshold,
+        release_ms=device.limiter_release,
     )
 
 
@@ -1614,6 +1622,7 @@ def _guard_for(device):
         SPEAKER_RATE,
         device.bass_guard_enabled,
         device.bass_guard_db,
+        device.board_id,
     )
 
 
@@ -4657,6 +4666,7 @@ async def handle_control(ws: WebSocketServerProtocol, secure: bool = False):
             await api.notify_pair_request(device_id, "link")
         device.eq_bands      = config.get("eqBands", [0.0] * 8)
         device.eq_loudness   = bool(config.get("eqLoudness", False))
+        device.eq_stock_curve = bool(config.get("eqStockCurve", False))
         device.bass_guard_enabled = bool(config.get("bassGuardEnabled", True))
         device.bass_guard_db      = float(config.get(
             "bassGuardDb", em_mbc.DEFAULT_BASS_GUARD_DB))
@@ -4680,7 +4690,7 @@ async def handle_control(ws: WebSocketServerProtocol, secure: bool = False):
         # value via volume_state on connect, but this seeds a sane default
         # in the window before that first message arrives.
         device.volume = _device_level_to_ha(
-            int(config.get("startupVolume", 85))
+            int(config.get("startupVolume", 85)), device.board_id
         )
         log.info(f"[control] Config pushed to {device_id} (volume={device.volume:.3f})")
 
@@ -4824,6 +4834,7 @@ async def handle_control(ws: WebSocketServerProtocol, secure: bool = False):
             start_conversation=_start_conversation,
             set_wake_word=_set_wake_word,
             wake_word_enabled=device.wake_word_enabled,
+            board_id=device.board_id,
         )
         # A device boots at its stored startupVolume, which an output mute
         # never overwrites — so a mute from before this connection has to be
@@ -4953,7 +4964,8 @@ async def handle_control(ws: WebSocketServerProtocol, secure: bool = False):
                             # report is the one kept.
                             await device.send_control({"type": "volume_set", "level": _send})
                         if _keep:
-                            device.volume = _device_level_to_ha(raw_level)
+                            device.volume = _device_level_to_ha(raw_level,
+                                                                device.board_id)
                             log.debug(
                                 f"[{device_id}] volume_state: level={raw_level} "
                                 f"→ {device.volume:.3f}"
