@@ -3,6 +3,7 @@ package speaker
 import (
 	"encoding/xml"
 	"fmt"
+	"log"
 	"os"
 	"strconv"
 	"strings"
@@ -13,10 +14,26 @@ import (
 
 const radarMute = "MFP Gpio Mute"
 
+// radarDeviceXML is the device's own audio configuration on its stock system
+// partition. Both codec filter profiles are read from it at runtime, so no
+// stock values are compiled into or distributed with a build.
+const radarDeviceXML = "/system/etc/audio_device.xml"
+
 // Read the device's own speaker calibration, not the headphone profile, and
 // never redistribute stock files in a build. FireOS's HAL normally loads this;
 // emOS has no HAL. An all-zero profile leaves Radar silent (#535).
 func radarSpeakerProfile(data []byte) ([]string, error) {
+	return radarProfile(data, "ext_speaker_output", "speaker")
+}
+
+// radarJackProfile is the codec filter Amazon's HAL loads when a plug goes
+// into the jack (ext_headphone_output/turnon). The speaker profile is the
+// Radar driver's correction; left in place it shapes the line out too.
+func radarJackProfile(data []byte) ([]string, error) {
+	return radarProfile(data, "ext_headphone_output", "jack")
+}
+
+func radarProfile(data []byte, pathName, label string) ([]string, error) {
 	var doc struct {
 		XMLName xml.Name `xml:"mixercontrol"`
 		Paths   []struct {
@@ -33,7 +50,7 @@ func radarSpeakerProfile(data []byte) ([]string, error) {
 	}
 	var profile []string
 	for _, path := range doc.Paths {
-		if path.Name != "ext_speaker_output" || path.Value != "turnon" {
+		if path.Name != pathName || path.Value != "turnon" {
 			continue
 		}
 		for _, ctl := range path.Controls {
@@ -41,24 +58,24 @@ func radarSpeakerProfile(data []byte) ([]string, error) {
 				continue
 			}
 			if profile != nil {
-				return nil, fmt.Errorf("duplicate Radar speaker profile")
+				return nil, fmt.Errorf("duplicate Radar %s profile", label)
 			}
 			profile = strings.Fields(ctl.Value)
 		}
 	}
 	if len(profile) != 117 {
-		return nil, fmt.Errorf("Radar speaker profile: expected 117 bytes, got %d", len(profile))
+		return nil, fmt.Errorf("Radar %s profile: expected 117 bytes, got %d", label, len(profile))
 	}
 	nonzero := false
 	for _, s := range profile {
 		v, err := strconv.ParseUint(s, 10, 8)
 		if err != nil {
-			return nil, fmt.Errorf("Radar speaker profile: invalid byte %q", s)
+			return nil, fmt.Errorf("Radar %s profile: invalid byte %q", label, s)
 		}
 		nonzero = nonzero || v != 0
 	}
 	if !nonzero {
-		return nil, fmt.Errorf("Radar speaker profile is all zero")
+		return nil, fmt.Errorf("Radar %s profile is all zero", label)
 	}
 	return profile, nil
 }
@@ -177,4 +194,75 @@ func unmuteRadarSpeaker(wait func(time.Duration) error) (err error) {
 		}
 	}
 	return mixer.Set(mixer.PlaybackVolume, radarDacUnity)
+}
+
+// Radar's jack, from the device's own audio_device.xml and the HAL behind it
+// (audio.primary.mt8163_headless.so), read on Radar1, 2026-10-10.
+const (
+	ctlBiquad       = "biquad coefficients"
+	ctlIgnoreRampUp = "Ignore Ramp Up"
+)
+
+// radarJackRouting is jackRouting for Radar: the same three controls with the
+// same values, plus the two the HAL's paths add.
+//
+//   - The codec filter is swapped. ext_headphone_output/turnon loads its own
+//     profile; the speaker one is the driver correction for Radar's woofer and
+//     tweeter, and left in place it shapes the line out ("sounds odd").
+//     Removal writes the speaker profile back, which Init otherwise only does
+//     once at boot.
+//   - Ignore Ramp Up is On with a plug in and Off without, as the two paths
+//     set it.
+//
+// The order is the HAL's: inserting runs ext_speaker_output/turnoff, then
+// ext_headphone_output/turnon; removing runs ext_headphone_output/turnoff,
+// then ext_speaker_output/turnon. So the amp goes off first on insert and on
+// last on removal, and the speaker never plays through the jack filter.
+//
+// DacMux is On with a plug in, as on the Dot (#566): with the fork's Off the
+// jack was silent on Radar1 (2026-10-10), and the HAL writes On as well.
+//
+// Without both profiles this is jackRouting unchanged: a missing jack path
+// keeps the previous behaviour rather than writing half a configuration.
+func radarJackRouting(inserted bool, speaker, jack []string) []mixerWrite {
+	if speaker == nil || jack == nil {
+		return jackRouting(inserted)
+	}
+	if inserted {
+		return []mixerWrite{
+			{Ctl: ctlSpeakerAmp, Args: []string{"Off"}},
+			{Ctl: ctlBiquad, Args: jack},
+			{Ctl: ctlIgnoreRampUp, Args: []string{"On"}},
+			{Ctl: ctlHPDriverGain, Args: []string{hpGainJack, hpGainJack}},
+			{Ctl: ctlDacMux, Args: []string{dacMuxJack}},
+		}
+	}
+	return []mixerWrite{
+		{Ctl: ctlIgnoreRampUp, Args: []string{"Off"}},
+		{Ctl: ctlDacMux, Args: []string{dacMuxInternal}},
+		{Ctl: ctlBiquad, Args: speaker},
+		{Ctl: ctlHPDriverGain, Args: []string{hpGainInternal, hpGainInternal}},
+		{Ctl: ctlSpeakerAmp, Args: []string{"On"}},
+	}
+}
+
+// loadRadarJackProfiles reads both filter profiles for the jack routing. The
+// speaker profile has already been validated by prepareRadarSpeaker; a jack
+// profile that is missing or invalid is logged and the jack keeps the speaker
+// filter, which is how every build before this one behaved.
+func loadRadarJackProfiles(path string) (speaker, jack []string) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		log.Printf("[speaker] Radar jack profile unavailable (%v) — the jack keeps the speaker filter", err)
+		return nil, nil
+	}
+	if speaker, err = radarSpeakerProfile(data); err != nil {
+		log.Printf("[speaker] Radar jack routing: %v — the jack keeps the speaker filter", err)
+		return nil, nil
+	}
+	if jack, err = radarJackProfile(data); err != nil {
+		log.Printf("[speaker] Radar jack profile unavailable (%v) — the jack keeps the speaker filter", err)
+		return nil, nil
+	}
+	return speaker, jack
 }

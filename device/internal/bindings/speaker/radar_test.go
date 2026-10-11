@@ -141,3 +141,123 @@ func TestRadarUnmuteSequenceAndStreamFailure(t *testing.T) {
 		}
 	}
 }
+
+// bothProfilesXML is a device file carrying both filter profiles, different
+// from each other, so a test can tell which one was written.
+func bothProfilesXML() (xml string, speaker, jack []string) {
+	sp := strings.TrimSpace(strings.Repeat("123 ", 117))
+	hp := strings.TrimSpace(strings.Repeat("7 ", 117))
+	xml = `<mixercontrol>` +
+		`<path name="ext_speaker_output" value="turnon"><kctl name="biquad coefficients" value="` + sp + `"/></path>` +
+		`<path name="ext_headphone_output" value="turnon"><kctl name="biquad coefficients" value="` + hp + `"/></path>` +
+		`<path name="ext_headphone_output" value="turnoff"><kctl name="Audio_DacMux_Setting" value="Off"/></path>` +
+		`</mixercontrol>`
+	return xml, strings.Fields(sp), strings.Fields(hp)
+}
+
+func TestRadarJackProfileReadsTheHeadphonePath(t *testing.T) {
+	data, sp, hp := bothProfilesXML()
+	got, err := radarJackProfile([]byte(data))
+	if err != nil || strings.Join(got, " ") != strings.Join(hp, " ") {
+		t.Fatalf("jack profile=%v err=%v", got, err)
+	}
+	if got, _ := radarSpeakerProfile([]byte(data)); strings.Join(got, " ") != strings.Join(sp, " ") {
+		t.Fatalf("speaker profile picked up the jack path: %v", got)
+	}
+	// profileXML's headphone path is invalid ("bad"): refused, not guessed.
+	if _, err := radarJackProfile([]byte(profileXML(strings.Repeat("1 ", 117)))); err == nil {
+		t.Fatal("accepted an invalid jack profile")
+	}
+}
+
+func indexOf(ws []mixerWrite, ctl string) int {
+	for i, w := range ws {
+		if w.Ctl == ctl {
+			return i
+		}
+	}
+	return -1
+}
+
+// The HAL's order and the HAL's values: amp off first and the jack filter on
+// insert; the speaker filter back and the amp on LAST on removal, so the
+// speaker never plays through the jack filter.
+func TestRadarJackRoutingSwapsTheFilterInTheHALsOrder(t *testing.T) {
+	_, sp, hp := bothProfilesXML()
+
+	in := radarJackRouting(true, sp, hp)
+	if in[0].Ctl != ctlSpeakerAmp || in[0].Args[0] != "Off" {
+		t.Errorf("insert must switch the amp off first, got %+v", in[0])
+	}
+	if i := indexOf(in, ctlBiquad); i < 0 || strings.Join(in[i].Args, " ") != strings.Join(hp, " ") {
+		t.Errorf("insert must load the jack filter, got %+v", in)
+	}
+	if i := indexOf(in, ctlIgnoreRampUp); i < 0 || in[i].Args[0] != "On" {
+		t.Errorf("insert must set Ignore Ramp Up On, got %+v", in)
+	}
+
+	out := radarJackRouting(false, sp, hp)
+	last := out[len(out)-1]
+	if last.Ctl != ctlSpeakerAmp || last.Args[0] != "On" {
+		t.Errorf("removal must switch the amp on last, got %+v", last)
+	}
+	if i := indexOf(out, ctlBiquad); i < 0 || strings.Join(out[i].Args, " ") != strings.Join(sp, " ") {
+		t.Errorf("removal must restore the speaker filter, got %+v", out)
+	}
+	if i := indexOf(out, ctlIgnoreRampUp); i < 0 || out[i].Args[0] != "Off" {
+		t.Errorf("removal must set Ignore Ramp Up Off, got %+v", out)
+	}
+}
+
+// The controls the reconcile loop checks (jackRoutingDrift, which works from
+// jackRouting) must get the same values on Radar, or it would rewrite them
+// every 30s against the routing it just applied.
+func TestRadarJackRoutingAgreesWithTheSharedControls(t *testing.T) {
+	_, sp, hp := bothProfilesXML()
+	for _, inserted := range []bool{true, false} {
+		radar := radarJackRouting(inserted, sp, hp)
+		for _, w := range jackRouting(inserted) {
+			i := indexOf(radar, w.Ctl)
+			if i < 0 || strings.Join(radar[i].Args, " ") != strings.Join(w.Args, " ") {
+				t.Errorf("inserted=%v: %s is %+v on Radar, %v in jackRouting", inserted, w.Ctl, radar, w.Args)
+			}
+		}
+	}
+}
+
+// No jack profile: exactly the previous behaviour, never half of the new one.
+func TestRadarJackRoutingWithoutProfilesIsTheOldRouting(t *testing.T) {
+	_, sp, hp := bothProfilesXML()
+	for _, inserted := range []bool{true, false} {
+		for _, c := range [][2][]string{{nil, hp}, {sp, nil}, {nil, nil}} {
+			got := radarJackRouting(inserted, c[0], c[1])
+			want := jackRouting(inserted)
+			if len(got) != len(want) || indexOf(got, ctlBiquad) >= 0 {
+				t.Errorf("inserted=%v: got %+v, want %+v", inserted, got, want)
+			}
+		}
+	}
+}
+
+func TestLoadRadarJackProfilesNeedsBoth(t *testing.T) {
+	dir := t.TempDir()
+	both, sp, hp := bothProfilesXML()
+	write := func(name, data string) string {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte(data), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	s, j := loadRadarJackProfiles(write("both.xml", both))
+	if strings.Join(s, " ") != strings.Join(sp, " ") || strings.Join(j, " ") != strings.Join(hp, " ") {
+		t.Fatalf("speaker=%v jack=%v", s, j)
+	}
+	noJack := strings.ReplaceAll(both, `name="ext_headphone_output" value="turnon"`, `name="ext_headphone_output" value="turnoff"`)
+	if s, j := loadRadarJackProfiles(write("nojack.xml", noJack)); s != nil || j != nil {
+		t.Errorf("a file without a jack profile must give neither, got %v %v", s, j)
+	}
+	if s, j := loadRadarJackProfiles(filepath.Join(dir, "missing.xml")); s != nil || j != nil {
+		t.Errorf("a missing file must give neither, got %v %v", s, j)
+	}
+}

@@ -65,6 +65,11 @@ var silencePeriod = make([]byte, periodBytes)
 
 type PcmSpeaker struct {
 	radar bool
+	// radarSpeakerBiquad and radarJackBiquad are Radar's two codec filter
+	// profiles, read from the device in Init; nil off Radar, or when the jack
+	// profile could not be read (see radarJackRouting).
+	radarSpeakerBiquad []string
+	radarJackBiquad    []string
 	// pcm is the playback device, found by name (pkg/board) in Init, and
 	// statusFile its substream's status in procfs.
 	pcm        board.PCMAddr
@@ -309,9 +314,10 @@ func (p *PcmSpeaker) Init() (err error) {
 	exec.Command("stop", "media").Run()
 	waitForFreePcm(p.pcm.Card, p.pcm.Device, pcmFreeTimeout)
 	if p.radar {
-		if err = prepareRadarSpeaker("/system/etc/audio_device.xml"); err != nil {
+		if err = prepareRadarSpeaker(radarDeviceXML); err != nil {
 			return err
 		}
+		p.radarSpeakerBiquad, p.radarJackBiquad = loadRadarJackProfiles(radarDeviceXML)
 	}
 	// Connect the DAC to the output mixer before opening the stream: DAPM
 	// decides what to power at stream open, and an unrouted DAC is powered
@@ -421,9 +427,17 @@ func (p *PcmSpeaker) SetJackRouting(inserted bool) {
 	p.jackKnown = true
 	p.jackMu.Unlock()
 
-	p.applyJackWrites(jackRouting(inserted))
+	p.applyJackWrites(p.jackWrites(inserted))
 	log.Printf("[speaker] jack routing applied (%s)",
 		map[bool]string{true: "external", false: "internal"}[inserted])
+}
+
+// jackWrites is the routing for a plug position on this board.
+func (p *PcmSpeaker) jackWrites(inserted bool) []mixerWrite {
+	if p.radar {
+		return radarJackRouting(inserted, p.radarSpeakerBiquad, p.radarJackBiquad)
+	}
+	return jackRouting(inserted)
 }
 
 func (p *PcmSpeaker) applyJackWrites(ws []mixerWrite) {
