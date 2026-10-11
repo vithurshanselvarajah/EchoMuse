@@ -25,6 +25,10 @@ type Params struct {
 	// files loaded — RadarTuning). On by default: without it a Radar's
 	// speaker has no audible bass (Radar1, 2026-10-10).
 	StockCurve bool
+	// Jack: a plug is in the jack (speaker.chainForJack). On Radar the
+	// stages that exist for its internal speaker — the stock curve and the
+	// MBCL bands — are left out; the limiter stays.
+	Jack bool
 }
 
 // DefaultParams mirrors the controller's defaults, so a device that has not
@@ -130,6 +134,7 @@ type Chain struct {
 	// limFixed: the limiter runs at its own threshold and release (Radar's
 	// MBCL full-band limiter), not the ones in Params.
 	limFixed                     bool
+	skipGuard                    bool // Params.Jack on Radar's multiband
 	limThresholdDb, limReleaseMs float64
 	idle                         bool // state is all zero and input is silence
 	running                      bool // active on the previous period
@@ -259,7 +264,12 @@ func (c *Chain) apply(p Params) {
 	// only place that knows this period's frame count (needed to size it)
 	// — apply only records what is WANTED. No effect at all when firBands
 	// is nil (every board but Radar).
-	c.wantFIR = p.StockCurve && c.firBands != nil
+	c.wantFIR = p.StockCurve && !p.Jack && c.firBands != nil
+	_, multiband := c.guard.(*radarMultiband)
+	if skip := p.Jack && multiband; skip != c.skipGuard {
+		c.guard.reset()
+		c.skipGuard = skip
+	}
 }
 
 // takePending applies a queued SetParams. Returns the params that are now in
@@ -433,7 +443,9 @@ func (c *Chain) runMono(x []float64) {
 			}
 		}
 		v = c.eq.step(v)
-		v = c.guard.step(v)
+		if !c.skipGuard {
+			v = c.guard.step(v)
+		}
 		v = c.lim.step(v)
 		if c.fir != nil {
 			v *= c.trimGain // OutputTrim: after MBCL's limiter, as in AFE.cfg

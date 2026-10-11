@@ -181,8 +181,9 @@ func TestChainForJackBypassesOnlyTheGuardWithAPlugIn(t *testing.T) {
 	}
 	want := in
 	want.GuardEnabled = false
+	want.Jack = true
 	if got != want {
-		t.Errorf("only GuardEnabled may change:\n got %+v\nwant %+v", got, want)
+		t.Errorf("only GuardEnabled and Jack may change:\n got %+v\nwant %+v", got, want)
 	}
 	if !got.LimiterEnabled {
 		t.Errorf("limiter must stay on with a plug in")

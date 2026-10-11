@@ -114,3 +114,33 @@ func copyFile(t *testing.T, from, to string) {
 		t.Fatal(err)
 	}
 }
+
+// With a plug in (Params.Jack) a Radar chain leaves out the stock curve and
+// the multiband, which are tuned for its speaker, and takes them back when
+// the plug comes out.
+func TestRadarJackLeavesOutTheSpeakerStages(t *testing.T) {
+	rt, err := LoadRadarTuning(filepath.Join("testdata", "radar_tuning"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := NewForBoard(48000, "radar", rt)
+	c.SetActive(true)
+	c.SetVolumeGain(1)
+	p := DefaultParams()
+	p.Jack = true
+	c.SetParams(p)
+	c.Process(loud(2048))
+	if c.fir != nil || !c.skipGuard {
+		t.Fatalf("jack: fir %v, guard skipped %v", c.fir != nil, c.skipGuard)
+	}
+	if r := c.guard.takeMaxReductionDb(); r != 0 {
+		t.Errorf("jack: the multiband ran (%gdB)", r)
+	}
+
+	p.Jack = false
+	c.SetParams(p)
+	c.Process(loud(2048))
+	if c.fir == nil || c.skipGuard {
+		t.Fatalf("speaker: fir %v, guard skipped %v", c.fir != nil, c.skipGuard)
+	}
+}
