@@ -13,7 +13,7 @@ firmware `a4c741b` and the controller of the same commit.
 
 | Dashboard setting (Config → Playback) | Set to | Why |
 |---|---|---|
-| Radar's own stock EQ curve | **On** | Turns on the FIR, ParametricEQ and OutputTrim |
+| Radar's own stock EQ curve | **On** (the default) | Turns on the FIR, ParametricEQ and OutputTrim |
 | EQ bands | **Flat** | Stock has no user EQ in this path; any band adds to stock's curve |
 | Speech boost | **Off** | Not part of stock |
 | Speaker protection (bass guard) | **On** | On Radar this switch IS stock's MBCL compressor bands |
@@ -27,6 +27,9 @@ makes no audible difference.
 > protection off predates this port. It was written when the guard was
 > biscuit's tuning. On Radar it is now stock's MBCL, and turning it off moves
 > away from stock.
+
+With a plug in the jack, the stock curve and the MBCL bands are left out:
+they are tuned for the internal speaker. The limiter stays.
 
 ## The chain, stage by stage
 
@@ -163,7 +166,8 @@ was on in Music Assistant.
 | What | Python (reference) | Go (on the Echo) |
 |---|---|---|
 | Volume table and EQ file choice | `controller/em_volume.py`, `em_eq.py` | `outchain/eqfir.go`, `internal/server/volume.go` |
-| FIR, ParametricEQ, OutputTrim | `em_eq.py`, `radar_eq_banded.json` | `outchain/chain.go`, `eqfir.go` |
+| Reading the tuning | `em_radar_tuning.py` | `outchain/radartuning.go` |
+| FIR, ParametricEQ, OutputTrim | `em_eq.py` | `outchain/chain.go`, `eqfir.go` |
 | MBCL bands and crossovers | `em_mbc.py` (`RadarMultiband`) | `outchain/radarmbc.go` |
 | Compressor | `em_mbc.py` (`StockCompressor`) | `outchain/stockcomp.go` |
 | Limiter | `em_limiter.py` (`StockLimiter`) | `outchain/stocklimiter.go` |
@@ -173,7 +177,14 @@ was on in Music Assistant.
 output; `TestMatchesControllerChain` holds the Go to it. The three Radar cases
 currently match with 0 samples different.
 
-No stock binary is shipped. Two sets of stock data are: the five FIR curves,
-converted from stock's `EQ_*.cfg` into `radar_eq_banded.json`, and the
-numbers in the tables above. The codec filter is not shipped; it is read
-from the Echo's own `/system` at start-up.
+No stock binary and no stock tuning file is shipped. The device reads the
+FIR curves, ParametricEQ, OutputTrim and MBCL from its own
+`/system/vendor/etc/audio-algorithms` at start-up, through `AFE.cfg`'s
+Playback path, as it reads the codec filter from `/system/etc`. A Radar
+whose files are missing logs why and plays without the stock curve. The
+controller reads the same files only from a copy named by
+`ECHOMUSE_RADAR_TUNING`, which is also what the tests that need them use;
+they skip without it.
+
+What is in the code: the volume table read out of `/system/bin/mixer`, and
+the compressor and limiter constants read out of `libasp.so`.
