@@ -5,31 +5,6 @@ import (
 	"testing"
 )
 
-// Pins the table against silent drift — same reason em_mbc.py's own pin
-// exists. Band 1's ratio/threshold must also agree with
-// bassRatio/radarBassThresholdDb, the same measured band read twice.
-func TestRadarBandsMatchItsOwnMeasuredConfiguration(t *testing.T) {
-	want := [4]radarBandSpec{
-		{20.0, -25.0, -40.0, 0.0, -12.0, 200.0, 0.0},
-		{10.0, -18.0, -40.0, 0.0, -12.0, 80.0, 0.0},
-		{3.0, -15.0, -40.0, 3.0, -4.0, 20.0, 3.0},
-		{2.0, -10.0, -40.0, 3.0, -3.0, 20.0, 0.0},
-	}
-	if radarBands != want {
-		t.Errorf("radarBands = %+v, want %+v", radarBands, want)
-	}
-	if radarBands[0].compRatio != bassRatio {
-		t.Errorf("band 1 ratio = %g, want bassRatio %g", radarBands[0].compRatio, bassRatio)
-	}
-	if radarBands[0].compThresholdDb != radarBassThresholdDb {
-		t.Errorf("band 1 threshold = %g, want radarBassThresholdDb %g",
-			radarBands[0].compThresholdDb, radarBassThresholdDb)
-	}
-	if radarMbclInVolDb != 4.0 {
-		t.Errorf("radarMbclInVolDb = %g, want 4.0", radarMbclInVolDb)
-	}
-}
-
 // Stock's limiter never lets a sample past its threshold, and its release
 // is clamped to 180..400ms whatever the config asks (libasp 0x8d75c).
 func TestStockLimiterPinsAtThresholdAndClampsRelease(t *testing.T) {
@@ -63,7 +38,7 @@ func TestStockLimiterPinsAtThresholdAndClampsRelease(t *testing.T) {
 // equivalent test and process's comment on why those trims are
 // unconditional).
 func TestRadarMultibandQuietSignalEngagesNoLaw(t *testing.T) {
-	m := newRadarMultiband(48000)
+	m := newRadarMultiband(48000, radarTuningForTest(t).MBCL)
 	m.enabled = true
 	// Stock seeds every band's level at 0.01 (-20dB power), over band 1's
 	// -25dB threshold, so a fresh compressor reduces briefly while that
@@ -86,7 +61,7 @@ func TestRadarMultibandQuietSignalEngagesNoLaw(t *testing.T) {
 // A loud low tone must engage band 1's law (compressor + its own limiter)
 // hard, mirroring em_mbc.py's own RadarMultiband smoke test.
 func TestRadarMultibandLoudBassEngagesBandOne(t *testing.T) {
-	m := newRadarMultiband(48000)
+	m := newRadarMultiband(48000, radarTuningForTest(t).MBCL)
 	m.enabled = true
 	fs := 48000.0
 	var peakOut float64
@@ -109,7 +84,7 @@ func TestRadarMultibandLoudBassEngagesBandOne(t *testing.T) {
 // — toggling back on should resume from where it left off, not from
 // unity, same contract as bassGuard/limiter bypass.
 func TestRadarMultibandDisableFreezesGainState(t *testing.T) {
-	m := newRadarMultiband(48000)
+	m := newRadarMultiband(48000, radarTuningForTest(t).MBCL)
 	m.enabled = true
 	for i := 0; i < 4800; i++ {
 		m.step(30000.0 * math.Sin(2*math.Pi*50*float64(i)/48000))
@@ -131,7 +106,7 @@ func TestRadarMultibandDisableFreezesGainState(t *testing.T) {
 // setFloorDb must reach band 1 only — bands 2-4 have no dashboard control,
 // same reasoning as the limiter override.
 func TestRadarMultibandSetFloorDbOnlyTouchesBandOne(t *testing.T) {
-	m := newRadarMultiband(48000)
+	m := newRadarMultiband(48000, radarTuningForTest(t).MBCL)
 	want2 := m.comp[1].floorDb
 	m.setFloorDb(-10.0)
 	if m.comp[0].floorDb != -10.0 {
@@ -146,7 +121,7 @@ func TestRadarMultibandSetFloorDbOnlyTouchesBandOne(t *testing.T) {
 // a stale biquad left non-zero would leave an audible tail on the device
 // at every reactivation.
 func TestRadarMultibandResetClearsEveryFilter(t *testing.T) {
-	m := newRadarMultiband(48000)
+	m := newRadarMultiband(48000, radarTuningForTest(t).MBCL)
 	m.enabled = true
 	for i := 0; i < 4800; i++ {
 		m.step(30000.0 * math.Sin(2*math.Pi*500*float64(i)/48000))

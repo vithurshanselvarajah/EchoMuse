@@ -29,11 +29,11 @@ func rmsOf(buf []byte) float64 {
 // Only Radar takes the volume ahead of its chain; every other board leaves
 // it to the speaker, after the chain, as before.
 func TestOnlyRadarTakesVolume(t *testing.T) {
-	if !NewForBoard(48000, "radar").TakesVolume() {
+	if !NewForBoard(48000, "radar", nil).TakesVolume() {
 		t.Error("radar chain does not take the volume")
 	}
 	for _, id := range []string{"biscuit", ""} {
-		if NewForBoard(48000, id).TakesVolume() {
+		if NewForBoard(48000, id, nil).TakesVolume() {
 			t.Errorf("%q chain takes the volume", id)
 		}
 	}
@@ -46,7 +46,7 @@ func TestOnlyRadarTakesVolume(t *testing.T) {
 // chain, as before, it would be exactly 20dB at every level.
 func TestRadarVolumeAheadOfMBCL(t *testing.T) {
 	run := func(gain float64) float64 {
-		c := NewForBoard(48000, "radar")
+		c := NewForBoard(48000, "radar", radarTuningForTest(t))
 		c.SetActive(true)
 		c.SetVolumeGain(gain)
 		var out float64
@@ -68,7 +68,7 @@ func TestRadarVolumeAheadOfMBCL(t *testing.T) {
 // Volume zero is silence through a chain that takes it, and a biscuit chain
 // ignores SetVolumeGain entirely.
 func TestVolumeGainEdges(t *testing.T) {
-	c := NewForBoard(48000, "radar")
+	c := NewForBoard(48000, "radar", radarTuningForTest(t))
 	c.SetActive(true)
 	c.SetVolumeGain(0)
 	buf := tone(2048, 1000, 20000)
@@ -79,7 +79,7 @@ func TestVolumeGainEdges(t *testing.T) {
 		t.Errorf("radar at volume 0: rms %.2f, want silence", r)
 	}
 
-	b := NewForBoard(48000, "biscuit")
+	b := NewForBoard(48000, "biscuit", nil)
 	b.SetActive(true)
 	b.SetParams(Params{}) // everything off: a passthrough
 	b.SetVolumeGain(0)
@@ -96,7 +96,7 @@ func TestVolumeGainEdges(t *testing.T) {
 // TookVolume answers for what Process did: never while inactive, and never
 // on a board that does not take the volume.
 func TestTookVolume(t *testing.T) {
-	r := NewForBoard(48000, "radar")
+	r := NewForBoard(48000, "radar", radarTuningForTest(t))
 	r.Process(tone(2048, 1000, 1000))
 	if r.TookVolume() {
 		t.Error("inactive radar chain reports it took the volume")
@@ -106,7 +106,7 @@ func TestTookVolume(t *testing.T) {
 	if !r.TookVolume() {
 		t.Error("active radar chain reports it did not take the volume")
 	}
-	b := NewForBoard(48000, "biscuit")
+	b := NewForBoard(48000, "biscuit", nil)
 	b.SetActive(true)
 	b.Process(tone(2048, 1000, 1000))
 	if b.TookVolume() {

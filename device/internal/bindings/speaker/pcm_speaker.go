@@ -246,12 +246,13 @@ func (p *PcmSpeaker) OnStreamStats(cb func(StreamStats)) {
 }
 
 func NewPcmSpeaker(echoTap func([]byte), levelTap func(rms float64)) (*PcmSpeaker, error) {
+	boardID := board.IDOf(board.Current())
 	s := &PcmSpeaker{
 		stopCh:        make(chan struct{}),
 		deadCh:        make(chan struct{}),
 		echoTap:       echoTap,
 		levelTap:      levelTap,
-		chain:         outchain.NewForBoard(48000, board.IDOf(board.Current())),
+		chain:         outchain.NewForBoard(48000, boardID, radarTuning(boardID)),
 		chainBuf:      make([]byte, periodBytes),
 		srcBuf:        make([]byte, periodBytes),
 		responseMix:   make([]float64, periodSize*2),

@@ -1,53 +1,13 @@
 package outchain
 
-// Radar's full 4-band MBCL ("Radar Tuning V4.5"), read verbatim off a Radar
-// unit's own /system/vendor/etc/audio-algorithms/MBCL.cfg. This is the
-// bit-exact Go mirror of controller/em_mbc.py's RadarMultiband — see that
-// class's docstring for the full derivation: the real config table, why a
-// naive recursive crossover split does NOT sum flat (1.59dB of measured
-// ripple) and the allpass-compensation fix that makes it exact (4.6e-11dB),
-// and the one number that is inferred rather than read (each band's
-// compressor reuses its own limiter's release — the config has no
-// comp_release field at all).
-const (
-	radarFc1 = 70.0
-	radarFc2 = 200.0
-	radarFc3 = 3250.0
-
-	// The system gain MBCL applies to the WHOLE signal before splitting
-	// into bands — not a per-band trim. Applied unconditionally, same as
-	// every band's own comp_inVol/lim_inVol below — see radarMultiband.step.
-	radarMbclInVolDb = 4.0
-)
-
-// radarBandSpec is one row of MBCL.cfg's "Bands Definition".
-type radarBandSpec struct {
-	compRatio, compThresholdDb, compFloorDb, compInVolDb float64
-	limThresholdDb, limReleaseMs, limInVolDb             float64
-}
-
-var radarBands = [4]radarBandSpec{
-	// Band 1: 0-70Hz. comp_ratio/comp_threshold agree exactly with
-	// bassRatio/radarBassThresholdDb above — the same measured band read
-	// twice. Its own limiter (lim_thresh -12dB, release 200ms) is new:
-	// the single-band bassGuard this class replaces for Radar never had
-	// one.
-	{compRatio: 20.0, compThresholdDb: -25.0, compFloorDb: -40.0, compInVolDb: 0.0,
-		limThresholdDb: -12.0, limReleaseMs: 200.0, limInVolDb: 0.0},
-	// Band 2: 70-200Hz.
-	{compRatio: 10.0, compThresholdDb: -18.0, compFloorDb: -40.0, compInVolDb: 0.0,
-		limThresholdDb: -12.0, limReleaseMs: 80.0, limInVolDb: 0.0},
-	// Band 3: 200-3250Hz — most of the midrange, and the only band with a
-	// +3dB input trim into BOTH its compressor and its limiter.
-	{compRatio: 3.0, compThresholdDb: -15.0, compFloorDb: -40.0, compInVolDb: 3.0,
-		limThresholdDb: -4.0, limReleaseMs: 20.0, limInVolDb: 3.0},
-	// Band 4: 3250Hz-Nyquist.
-	{compRatio: 2.0, compThresholdDb: -10.0, compFloorDb: -40.0, compInVolDb: 3.0,
-		limThresholdDb: -3.0, limReleaseMs: 20.0, limInVolDb: 0.0},
-}
-
-// The system gain, precomputed: there is no reason to pay an Exp per sample.
-var radarSysGain = dbToGain(radarMbclInVolDb)
+// Radar's full 4-band MBCL, configured from the Echo's own MBCL.cfg
+// (RadarTuning.MBCL). This is the bit-exact Go mirror of
+// controller/em_mbc.py's RadarMultiband — see that class's docstring for the
+// derivation: why a naive recursive crossover split does NOT sum flat
+// (1.59dB of measured ripple) and the allpass-compensation fix that makes it
+// exact (4.6e-11dB), and the one number that is inferred rather than read
+// (each band's compressor reuses its own limiter's release — the config has
+// no comp_release field at all).
 
 // radarMultiband is Radar's full MBCL — three crossovers splitting the
 // signal into four bands, each running its own compressor then its own
@@ -67,6 +27,7 @@ var radarSysGain = dbToGain(radarMbclInVolDb)
 // function, separate state, because it filters a different signal.
 type radarMultiband struct {
 	enabled bool
+	sysGain float64 // MBCL.cfg's inVol, on the whole signal ahead of the split
 
 	lp1, hp1     [2]biquad // fc1 split, on x
 	lp2, hp2     [2]biquad // fc2 split, on high1
@@ -79,22 +40,23 @@ type radarMultiband struct {
 	lim  [4]*stockLimiter
 }
 
-func newRadarMultiband(fs float64) *radarMultiband {
-	lo1, hi1 := butter2(radarFc1, fs, false), butter2(radarFc1, fs, true)
-	lo2, hi2 := butter2(radarFc2, fs, false), butter2(radarFc2, fs, true)
-	lo3, hi3 := butter2(radarFc3, fs, false), butter2(radarFc3, fs, true)
+func newRadarMultiband(fs float64, spec *mbclSpec) *radarMultiband {
+	lo1, hi1 := butter2(spec.FC[0], fs, false), butter2(spec.FC[0], fs, true)
+	lo2, hi2 := butter2(spec.FC[1], fs, false), butter2(spec.FC[1], fs, true)
+	lo3, hi3 := butter2(spec.FC[2], fs, false), butter2(spec.FC[2], fs, true)
 
 	m := &radarMultiband{
-		lp1: [2]biquad{lo1, lo1}, hp1: [2]biquad{hi1, hi1},
+		sysGain: dbToGain(spec.InVol),
+		lp1:     [2]biquad{lo1, lo1}, hp1: [2]biquad{hi1, hi1},
 		lp2: [2]biquad{lo2, lo2}, hp2: [2]biquad{hi2, hi2},
 		lp2c: [2]biquad{lo2, lo2}, hp2c: [2]biquad{hi2, hi2},
 		lp3: [2]biquad{lo3, lo3}, hp3: [2]biquad{hi3, hi3},
 		lp3c1: [2]biquad{lo3, lo3}, hp3c1: [2]biquad{hi3, hi3},
 		lp3c2: [2]biquad{lo3, lo3}, hp3c2: [2]biquad{hi3, hi3},
 	}
-	for i, b := range radarBands {
-		m.comp[i] = newStockComp(fs, b.compRatio, b.compThresholdDb, b.compFloorDb, b.compInVolDb)
-		m.lim[i] = newStockLimiter(fs, b.limThresholdDb, b.limReleaseMs, b.limInVolDb)
+	for i, b := range spec.Bands {
+		m.comp[i] = newStockComp(fs, b.CompRatio, b.CompThresh, b.CompGainMin, b.CompInVol)
+		m.lim[i] = newStockLimiter(fs, b.LimThresh, b.LimRelease, b.LimInVol)
 	}
 	return m
 }
@@ -125,8 +87,8 @@ func (m *radarMultiband) step(x float64) float64 {
 	// bassGuard's own bypass.
 	var out float64
 	for i := 0; i < 4; i++ {
-		y := m.comp[i].step(raw[i] * radarSysGain) // comp_inVol inside
-		y = m.lim[i].step(y)                       // lim_inVol inside
+		y := m.comp[i].step(raw[i] * m.sysGain) // comp_inVol inside
+		y = m.lim[i].step(y)                    // lim_inVol inside
 		out += y
 	}
 	return out

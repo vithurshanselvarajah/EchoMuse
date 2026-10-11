@@ -8,18 +8,6 @@ import (
 	"sync/atomic"
 )
 
-// Radar's ParametricEQ.cfg ("EQv5.4") and OutputTrim, from its own vendor
-// files. AFE.cfg's Playback.Algorithms runs EQ (FIR) -> ParametricEQ -> MBCL
-// -> OutputTrim, so both ride StockCurve with the FIR, in that order. Only
-// the cfg's first two biquads are not BYPASS; both state Q=0.9, which
-// stock's design uses for the peak only (see stockLowShelf). Mirrors
-// controller/em_eq.py's RADAR_PEQ_* / RADAR_OUTPUT_TRIM_DB.
-const (
-	radarPEQShelfFc, radarPEQShelfDb              = 150.0, 5.0 // stock ignores the shelf Q
-	radarPEQPeakFc, radarPEQPeakDb, radarPEQPeakQ = 80.0, 2.0, 0.9
-	radarOutputTrimDb                             = 3.0
-)
-
 // Params is the chain's whole configuration. Defaults match
 // em_db.DEFAULT_DEVICE_CONFIG.
 type Params struct {
@@ -133,12 +121,16 @@ type Chain struct {
 	pending *Params // set by SetParams, taken by Process
 
 	// Owned by the ALSA goroutine.
-	params  Params
-	eq      eq
-	guard   bassStage
-	lim     peakLimiter
-	idle    bool // state is all zero and input is silence
-	running bool // active on the previous period
+	params Params
+	eq     eq
+	guard  bassStage
+	lim    peakLimiter
+	// limFixed: the limiter runs at its own threshold and release (Radar's
+	// MBCL full-band limiter), not the ones in Params.
+	limFixed                     bool
+	limThresholdDb, limReleaseMs float64
+	idle                         bool // state is all zero and input is silence
+	running                      bool // active on the previous period
 
 	// Stock FIR curve (Radar only — nil taps on every other board, and
 	// newEQFIR(nil, ...) is nil, so fir stays nil there with no extra
@@ -149,7 +141,7 @@ type Chain struct {
 	wantFIR   bool        // params.StockCurve as of the last apply()
 
 	// ParametricEQ and OutputTrim: present with the FIR (Radar), run only
-	// while it does. See the radarPEQ* constants.
+	// while it does.
 	peq      []biquad
 	trimGain float64
 
@@ -172,49 +164,46 @@ type Chain struct {
 // tuned for biscuit — see NewForBoard for a board-aware chain. Kept so every
 // existing caller and test vector (biscuit-only, to date) is unaffected.
 func New(sampleRate int) *Chain {
-	return NewForBoard(sampleRate, "biscuit")
+	return NewForBoard(sampleRate, "biscuit", nil)
 }
 
 // NewForBoard builds a chain at the given sample rate, inactive, with
 // DefaultParams, with the bass guard tuned for boardID (pkg/board.IDOf) —
-// see bassGuardTuning. The guard always varies by board; the stock FIR
-// curve is only ever available on "radar" (nil firBands on every other
-// board id, so StockCurve has no effect there regardless of config). The
-// EQ bands are not board-specific; the limiter is overridden for Radar —
-// see apply.
-func NewForBoard(sampleRate int, boardID string) *Chain {
+// see bassGuardTuning. On "radar", rt is the stock tuning read from the Echo
+// (LoadRadarTuning): its MBCL replaces the guard and the limiter, and its
+// FIR, ParametricEQ and OutputTrim are the stock curve (Params.StockCurve).
+// With rt nil, or on any other board, there is no stock curve and the guard
+// and limiter are the generic ones. The EQ bands are not board-specific.
+func NewForBoard(sampleRate int, boardID string, rt *RadarTuning) *Chain {
 	fs := float64(sampleRate)
-	var guard bassStage
-	if boardID == "radar" {
-		// Radar's real MBCL.cfg is a 4-band multiband compressor, not a
-		// copy of biscuit's single band — see newRadarMultiband.
-		guard = newRadarMultiband(fs)
-	} else {
-		guard = newBassGuard(fs, boardID)
-	}
-	var lim peakLimiter = newLimiter(fs)
-	if boardID == "radar" {
-		lim = newStockLimiter(fs, radarLimiterThresholdDb, radarLimiterReleaseMs, 0)
-	}
+	radar := boardID == "radar"
 	c := &Chain{
 		fs:          fs,
 		boardID:     boardID,
 		eq:          eq{fs: fs},
-		guard:       guard,
-		lim:         lim,
+		guard:       newBassGuard(fs, boardID),
+		lim:         newLimiter(fs),
 		idle:        true,
-		takesVolume: boardID == "radar",
+		takesVolume: radar,
 		preCur:      1,
 	}
 	c.preTarget.Store(math.Float64bits(1))
-	if boardID == "radar" {
-		c.firBands, c.firBounds = loadRadarEQBands()
-		if c.firBands != nil {
-			c.peq = []biquad{
-				stockLowShelf(radarPEQShelfFc, radarPEQShelfDb, fs),
-				stockPeak(radarPEQPeakFc, radarPEQPeakDb, radarPEQPeakQ, fs),
-			}
-			c.trimGain = dbToGain(radarOutputTrimDb)
+	if radar && rt != nil {
+		if m := rt.MBCL; m != nil {
+			// Radar's real MBCL.cfg is a 4-band multiband compressor, not a
+			// copy of biscuit's single band — see newRadarMultiband. Its
+			// full-band limiter replaces the generic one, at its own
+			// threshold and release whatever a config push carries: there
+			// is no dashboard control for either on any board.
+			c.guard = newRadarMultiband(fs, m)
+			c.lim = newStockLimiter(fs, m.FullBand.LimThresh, m.FullBand.LimRelease, m.FullBand.LimInVol)
+			c.limFixed = true
+			c.limThresholdDb, c.limReleaseMs = m.FullBand.LimThresh, m.FullBand.LimRelease
+		}
+		if len(rt.FIRBands) > 0 {
+			c.firBands, c.firBounds = rt.FIRBands, rt.FIRBounds
+			c.peq = rt.peqBiquads(fs)
+			c.trimGain = dbToGain(rt.TrimDb)
 		}
 	}
 	c.apply(DefaultParams())
@@ -260,8 +249,8 @@ func (c *Chain) apply(p Params) {
 	c.guard.setFloorDb(math.Min(p.GuardDb, 0))
 	c.lim.setEnabled(p.LimiterEnabled)
 	limThresholdDb, limReleaseMs := p.LimiterThresholdDb, p.LimiterReleaseMs
-	if c.boardID == "radar" {
-		limThresholdDb, limReleaseMs = radarLimiterThresholdDb, radarLimiterReleaseMs
+	if c.limFixed {
+		limThresholdDb, limReleaseMs = c.limThresholdDb, c.limReleaseMs
 	}
 	c.lim.setParams(limThresholdDb, limReleaseMs, c.fs)
 	// Actually turning the FIR on/off is deferred to Process, which is the

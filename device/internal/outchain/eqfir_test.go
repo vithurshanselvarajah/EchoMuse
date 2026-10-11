@@ -140,21 +140,21 @@ func TestEQFIRImpulseFilterIsIdentity(t *testing.T) {
 	}
 }
 
-// Confirms the embedded data actually loads and is the right shape — a
-// corrupt embed would otherwise only surface as the stock curve silently
-// not running.
-func TestLoadRadarEQBandsFromEmbed(t *testing.T) {
-	bands, bounds := loadRadarEQBands()
-	if len(bands) != 5 || len(bounds) != 5 {
-		t.Fatalf("got %d bands / %d boundaries, want 5/5", len(bands), len(bounds))
+// Confirms the Echo's own files load and are the right shape — a bad
+// file would otherwise only surface as the stock curve silently not
+// running.
+func TestLoadRadarEQBandsFromTheEcho(t *testing.T) {
+	rt := radarTuningForTest(t)
+	bands, bounds := rt.FIRBands, rt.FIRBounds
+	if len(bands) == 0 || len(bands) != len(bounds) {
+		t.Fatalf("got %d bands / %d boundaries", len(bands), len(bounds))
 	}
-	want := []float64{50, 60, 70, 80, 100}
 	for i, b := range bands {
-		if len(b) != 2048 {
-			t.Errorf("band %d: %d taps, want 2048", i, len(b))
+		if len(b) != len(bands[0]) {
+			t.Errorf("band %d: %d taps, band 0 has %d", i, len(b), len(bands[0]))
 		}
-		if bounds[i] != want[i] {
-			t.Errorf("boundary %d = %g, want %g", i, bounds[i], want[i])
+		if i > 0 && bounds[i] <= bounds[i-1] {
+			t.Errorf("boundaries do not rise: %v", bounds)
 		}
 	}
 }

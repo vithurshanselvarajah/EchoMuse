@@ -1,53 +1,14 @@
 package outchain
 
 import (
-	_ "embed"
-	"encoding/json"
 	"math"
-	"sync"
 )
 
-// Radar's stock FIR is five curves, chosen by volume: AFE.cfg's "Equalizer
-// FIR" lists EQ_50/60/70/80/100.cfg against "Volume Boundary"
-// [50,60,70,80,100]. They are a loudness compensation — EQ_50 boosts 80Hz
-// by +10.1dB, EQ_100 by +1.4dB — not one curve at five gains, which is what
-// biscuit's EQ files are. See controller/em_eq.py's _RADAR_EQ_BANDED_PATH,
-// which this mirrors.
-//
-//go:embed radar_eq_banded.json
-var radarEQBandedJSON []byte
-
-type radarEQBandedFile struct {
-	Boundaries []float64   `json:"boundaries"`
-	Taps       [][]float64 `json:"taps"`
-}
-
-var (
-	radarEQBandedOnce sync.Once
-	radarEQBands      [][]float64
-	radarEQBoundaries []float64
-)
-
-// loadRadarEQBands parses the embedded coefficients once. A corrupt embed,
-// or one whose bands disagree in count or length, yields nil, which the
-// chain treats as "no stock curve available" rather than crashing the
-// device.
-func loadRadarEQBands() ([][]float64, []float64) {
-	radarEQBandedOnce.Do(func() {
-		var f radarEQBandedFile
-		if json.Unmarshal(radarEQBandedJSON, &f) != nil ||
-			len(f.Taps) == 0 || len(f.Taps) != len(f.Boundaries) {
-			return
-		}
-		for _, t := range f.Taps {
-			if len(t) == 0 || len(t) != len(f.Taps[0]) {
-				return
-			}
-		}
-		radarEQBands, radarEQBoundaries = f.Taps, f.Boundaries
-	})
-	return radarEQBands, radarEQBoundaries
-}
+// Radar's stock FIR is several curves, chosen by volume: AFE.cfg's
+// "Equalizer FIR" lists EQ_<n>.cfg files against "Volume Boundary". On the
+// stock Echo 2 they are a loudness compensation (more bass at low volume),
+// not one curve at several gains, which is what biscuit's EQ files are. Read
+// from the Echo at start-up — see RadarTuning.
 
 // stockMixerLevels is stock's attenuation for each 0-100 music volume value,
 // read out of /system/bin/mixer (Mixer_AlgoRampGain): a level in our own law,

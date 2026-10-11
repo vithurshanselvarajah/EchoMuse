@@ -142,7 +142,11 @@ func TestMatchesControllerChain(t *testing.T) {
 			if boardID == "" {
 				boardID = "biscuit"
 			}
-			c := NewForBoard(vc.SampleRate, boardID)
+			var rt *RadarTuning
+			if boardID == "radar" {
+				rt = radarTuningForTest(t)
+			}
+			c := NewForBoard(vc.SampleRate, boardID, rt)
 			c.SetActive(true)
 			got := make([]int16, 0, len(in))
 			for k := 0; k < vc.Chunks; k++ {
